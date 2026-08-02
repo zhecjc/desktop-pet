@@ -1680,26 +1680,33 @@ namespace DesktopPet
             return bmp;
         }
 
-        private void DrawWeatherFx(Graphics g, int w, int h)
+        private void DrawWeatherFx(Graphics g, int w, int h, Pose p)
         {
             if (_weatherFx.Length == 0) return;
             float bottom = h - 3f;
             float chh = (float)(_charH * _scale);
             float cw = (float)(_charW * _scale);
             float cx = w / 2f;
-            float top = bottom - chh;
             double t = DateTime.UtcNow.Ticks / 10000000.0; // 秒
 
             if (_weatherFx == "hot")
             {
+                g.TranslateTransform(cx, bottom + p.oy);
+                g.RotateTransform(p.rot);
+                g.TranslateTransform(p.ox, 0f);
                 if (_hotOverlay != null)
-                    g.DrawImage(_hotOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
+                    g.DrawImage(_hotOverlay, new RectangleF(-cw / 2f, -chh, cw, chh));
+                g.ResetTransform();
             }
             else if (_weatherFx == "cold")
             {
+                g.TranslateTransform(cx, bottom + p.oy);
+                g.RotateTransform(p.rot);
+                g.TranslateTransform(p.ox, 0f);
                 if (_coldOverlay != null)
-                    g.DrawImage(_coldOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
-                DrawIcicles(g, cx, top, cw, chh, t);
+                    g.DrawImage(_coldOverlay, new RectangleF(-cw / 2f, -chh, cw, chh));
+                DrawIcicles(g, cw, chh, t);
+                g.ResetTransform();
             }
         }
 
@@ -1825,7 +1832,7 @@ namespace DesktopPet
             });
         }
 
-        private void DrawIcicles(Graphics g, float cx, float top, float cw, float chh, double t)
+        private void DrawIcicles(Graphics g, float cw, float chh, double t)
         {
             float shim = (float)(Math.Sin(t * 2.2) * 0.5 + 0.5);
             int n = 5;
@@ -1833,21 +1840,21 @@ namespace DesktopPet
             {
                 for (int i = 0; i < n; i++)
                 {
-                    float x = cx - cw / 2f + cw * (i + 0.5f) / n;
+                    float x = -cw / 2f + cw * (i + 0.5f) / n;
                     float len = (6f + (i % 3) * 5f) * (float)_scale;
                     PointF[] tri = new PointF[]
                     {
-                        new PointF(x - 4f * (float)_scale, top),
-                        new PointF(x + 4f * (float)_scale, top),
-                        new PointF(x, top + len)
+                        new PointF(x - 4f * (float)_scale, -chh),
+                        new PointF(x + 4f * (float)_scale, -chh),
+                        new PointF(x, -chh + len)
                     };
                     g.FillPolygon(b, tri);
                 }
             }
             using (SolidBrush b = new SolidBrush(Color.FromArgb((int)(140 + 90 * shim), 255, 255, 255)))
             {
-                g.FillEllipse(b, cx + cw * 0.2f, top + chh * 0.1f, cw * 0.05f, cw * 0.05f);
-                g.FillEllipse(b, cx - cw * 0.25f, top + chh * 0.28f, cw * 0.035f, cw * 0.035f);
+                g.FillEllipse(b, cw * 0.2f, -chh + chh * 0.1f, cw * 0.05f, cw * 0.05f);
+                g.FillEllipse(b, -cw * 0.25f, -chh + chh * 0.28f, cw * 0.035f, cw * 0.035f);
             }
         }
 
@@ -2082,7 +2089,7 @@ namespace DesktopPet
                         Pose p = ComputePose();
                         DrawPet(g, w, h, p);
                         DrawEffect(g, w, h);
-                        if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
+                        if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h, p);
                         DrawWeatherParticles(g, w, h);
                     }
                     LayeredPainter.Push(Handle, surface, Location.X, Location.Y, _winAlpha);
@@ -2484,7 +2491,7 @@ namespace DesktopPet
                     Pose p = ComputePose();
                     DrawPet(g, w, h, p);
                     DrawEffect(g, w, h);
-                    if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
+                    if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h, p);
                     DrawWeatherParticles(g, w, h);
                 }
                 bmp.Save(path, ImageFormat.Png);
