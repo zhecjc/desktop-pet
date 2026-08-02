@@ -238,6 +238,18 @@ namespace DesktopPet
         private ToolStripMenuItem _miMood;
         private ToolStripMenuItem _miWander;
         private ToolStripMenuItem _miAutoStart;
+        private ToolStripMenuItem _miDrink;
+        private ToolStripMenuItem _miSit;
+        private ToolStripMenuItem _miDrinkInt;
+        private ToolStripMenuItem _miSitInt;
+        private ToolStripMenuItem[] _miDrinkInts;
+        private ToolStripMenuItem[] _miSitInts;
+        private bool _drinkEnabled;
+        private bool _sitEnabled;
+        private int _drinkIntervalMin = 60;
+        private int _sitIntervalMin = 60;
+        private DateTime _drinkNextAt;
+        private DateTime _sitNextAt;
         private ToolStripMenuItem _miWeather;
         private ToolStripMenuItem[] _miFxItems;
         private bool _weatherBusy;
@@ -314,6 +326,119 @@ namespace DesktopPet
             "举高高！再来一次！",
             "呼，站稳了～",
         };
+
+        private static readonly string[] DrinkPhrases = new string[]
+        {
+            "咕噜咕噜～该喝水啦！",
+            "主人，喝口水润润嗓子吧～",
+            "口渴了吗？喝杯温水休息下！",
+            "喝水时间到！(๑•̀ㅂ•́)و✧",
+        };
+
+        private static readonly string[] SitPhrases = new string[]
+        {
+            "坐了这么久，起来活动一下腰吧～",
+            "伸个懒腰，站起来走走！",
+            "久坐伤身，起身眺望远方一下吧！",
+            "该活动活动啦，扭扭脖子伸伸腿～",
+        };
+
+        private static readonly int[] HealthIntervals = new int[] { 30, 45, 60, 90, 120 };
+
+        private void TickHealth()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (_drinkEnabled && now >= _drinkNextAt)
+            {
+                _drinkNextAt = now.AddMinutes(_drinkIntervalMin);
+                ShowBubble(DrinkPhrases[_rng.Next(DrinkPhrases.Length)]);
+            }
+            if (_sitEnabled && now >= _sitNextAt)
+            {
+                _sitNextAt = now.AddMinutes(_sitIntervalMin);
+                if (!IsAnimating()) StartAnim("stretch", 1300, "zzz", 900);
+                ShowBubble(SitPhrases[_rng.Next(SitPhrases.Length)]);
+            }
+        }
+
+        private void ToggleDrink()
+        {
+            _drinkEnabled = !_drinkEnabled;
+            if (_miDrink != null) _miDrink.Checked = _drinkEnabled;
+            if (_drinkEnabled) _drinkNextAt = DateTime.UtcNow.AddMinutes(_drinkIntervalMin);
+            SaveSettings();
+        }
+
+        private void ToggleSit()
+        {
+            _sitEnabled = !_sitEnabled;
+            if (_miSit != null) _miSit.Checked = _sitEnabled;
+            if (_sitEnabled) _sitNextAt = DateTime.UtcNow.AddMinutes(_sitIntervalMin);
+            SaveSettings();
+        }
+
+        private void BuildHealthMenu(ToolStripMenuItem parent)
+        {
+            _miDrink = new ToolStripMenuItem("喝水提醒");
+            _miDrink.Checked = _drinkEnabled;
+            _miDrink.Click += delegate { ToggleDrink(); };
+            parent.DropDownItems.Add(_miDrink);
+
+            _miSit = new ToolStripMenuItem("久坐提醒");
+            _miSit.Checked = _sitEnabled;
+            _miSit.Click += delegate { ToggleSit(); };
+            parent.DropDownItems.Add(_miSit);
+
+            parent.DropDownItems.Add(new ToolStripSeparator());
+
+            _miDrinkInt = new ToolStripMenuItem("喝水间隔：" + _drinkIntervalMin + " 分钟");
+            _miDrinkInts = new ToolStripMenuItem[HealthIntervals.Length];
+            for (int i = 0; i < HealthIntervals.Length; i++)
+            {
+                int m = HealthIntervals[i];
+                _miDrinkInts[i] = new ToolStripMenuItem(m + " 分钟", null, delegate
+                {
+                    _drinkIntervalMin = m;
+                    if (_drinkEnabled) _drinkNextAt = DateTime.UtcNow.AddMinutes(m);
+                    SaveSettings();
+                });
+                _miDrinkInt.DropDownItems.Add(_miDrinkInts[i]);
+            }
+            parent.DropDownItems.Add(_miDrinkInt);
+
+            _miSitInt = new ToolStripMenuItem("久坐间隔：" + _sitIntervalMin + " 分钟");
+            _miSitInts = new ToolStripMenuItem[HealthIntervals.Length];
+            for (int i = 0; i < HealthIntervals.Length; i++)
+            {
+                int m = HealthIntervals[i];
+                _miSitInts[i] = new ToolStripMenuItem(m + " 分钟", null, delegate
+                {
+                    _sitIntervalMin = m;
+                    if (_sitEnabled) _sitNextAt = DateTime.UtcNow.AddMinutes(m);
+                    SaveSettings();
+                });
+                _miSitInt.DropDownItems.Add(_miSitInts[i]);
+            }
+            parent.DropDownItems.Add(_miSitInt);
+        }
+
+        private void RefreshHealthMenu()
+        {
+            if (_miDrink != null) _miDrink.Checked = _drinkEnabled;
+            if (_miSit != null) _miSit.Checked = _sitEnabled;
+            if (_miDrinkInt != null) _miDrinkInt.Text = "喝水间隔：" + _drinkIntervalMin + " 分钟";
+            if (_miSitInt != null) _miSitInt.Text = "久坐间隔：" + _sitIntervalMin + " 分钟";
+            if (_miDrinkInts != null)
+            {
+                for (int i = 0; i < _miDrinkInts.Length; i++)
+                    _miDrinkInts[i].Checked = (HealthIntervals[i] == _drinkIntervalMin);
+            }
+            if (_miSitInts != null)
+            {
+                for (int i = 0; i < _miSitInts.Length; i++)
+                    _miSitInts[i].Checked = (HealthIntervals[i] == _sitIntervalMin);
+            }
+        }
 
         private static readonly string[] DefaultHappy = new string[]
         {
@@ -510,6 +635,26 @@ namespace DesktopPet
                         {
                             _cityName = line.Substring(9).Trim();
                         }
+                        else if (line.StartsWith("drink="))
+                        {
+                            _drinkEnabled = line.Substring(6).Trim() == "1";
+                        }
+                        else if (line.StartsWith("drinkmin="))
+                        {
+                            int v;
+                            if (int.TryParse(line.Substring(9), out v) && v >= 10 && v <= 300)
+                                _drinkIntervalMin = v;
+                        }
+                        else if (line.StartsWith("sit="))
+                        {
+                            _sitEnabled = line.Substring(4).Trim() == "1";
+                        }
+                        else if (line.StartsWith("sitmin="))
+                        {
+                            int v;
+                            if (int.TryParse(line.Substring(7), out v) && v >= 10 && v <= 300)
+                                _sitIntervalMin = v;
+                        }
                     }
                 }
             }
@@ -527,7 +672,11 @@ namespace DesktopPet
                            "char=" + _charName + "\r\n" +
                            "wander=" + (_wanderEnabled ? "1" : "0") + "\r\n" +
                            "citycode=" + _cityCode + "\r\n" +
-                           "cityname=" + _cityName + "\r\n";
+                           "cityname=" + _cityName + "\r\n" +
+                           "drink=" + (_drinkEnabled ? "1" : "0") + "\r\n" +
+                           "drinkmin=" + _drinkIntervalMin + "\r\n" +
+                           "sit=" + (_sitEnabled ? "1" : "0") + "\r\n" +
+                           "sitmin=" + _sitIntervalMin + "\r\n";
                 File.WriteAllText(_settingsPath, s);
             }
             catch { }
@@ -1143,6 +1292,10 @@ namespace DesktopPet
             miPomo.DropDownItems.Add("停止计时", null, delegate { StopPomodoro(); });
             _menu.Items.Add(miPomo);
 
+            ToolStripMenuItem miHealth = new ToolStripMenuItem("健康提醒");
+            BuildHealthMenu(miHealth);
+            _menu.Items.Add(miHealth);
+
             _menu.Items.Add(new ToolStripSeparator());
 
             _miCharacters = new ToolStripMenuItem("切换角色");
@@ -1336,6 +1489,7 @@ namespace DesktopPet
             if (_miMood != null) _miMood.Text = "心情：" + MoodLabel();
             if (_miWander != null) _miWander.Checked = _wanderEnabled;
             if (_miAutoStart != null) _miAutoStart.Checked = IsAutoStartEnabled();
+            RefreshHealthMenu();
             RefreshCharacterMenu();
         }
 
@@ -2055,6 +2209,7 @@ namespace DesktopPet
             }
 
             TickPomodoro();
+            TickHealth();
             string today = DateTime.Now.ToString("yyyyMMdd");
             if (DateTime.Now.Hour >= 8 && _lastWeatherDay != today)
             {
