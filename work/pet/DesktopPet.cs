@@ -1113,7 +1113,8 @@ namespace DesktopPet
             }
             if (_hanging)
             {
-                int x = (_hangSide < 0) ? wa.X + 2 : wa.Right - w - 2;
+                // 大部分藏到屏幕外，只探出约 40% 露出头
+                int x = (_hangSide < 0) ? wa.X - (int)(w * 0.60f) : wa.Right - (int)(w * 0.40f);
                 double sway = Math.Sin(DateTime.UtcNow.Ticks / 10000000.0 * 2.2) * 10.0 * _scale;
                 Location = new Point(x, (int)Math.Round(_hangBaseY + sway));
             }
@@ -1181,6 +1182,7 @@ namespace DesktopPet
                 Location = new Point(center.X - newW / 2, center.Y - newH / 2);
             }
             ClampToScreen();
+            if (_hanging) _hangBaseY = Location.Y;
             SaveSettings();
             RenderFrame();
         }
