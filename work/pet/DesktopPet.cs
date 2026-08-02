@@ -245,8 +245,19 @@ namespace DesktopPet
         private string _lastWeatherDay = "";
         private readonly object _weatherLock = new object();
         private string _weatherFx = "";
+        private string _weatherParticle = "";
         private Bitmap _hotOverlay;
         private Bitmap _coldOverlay;
+        private readonly List<WeatherParticle> _particles = new List<WeatherParticle>();
+        private double _lastParticleTick;
+        private string _lastParticleType = "";
+
+        private class WeatherParticle
+        {
+            public string type;
+            public float x, y, vx, vy, size, phase, amp;
+            public int life, maxLife;
+        }
 
         private IntPtr _menuHookMouse;
         private IntPtr _menuHookKey;
@@ -1447,6 +1458,7 @@ namespace DesktopPet
                     _weatherFx = fx;
                     EnsureWeatherOverlays();
                 }
+                _weatherParticle = DecideWeatherParticle(wi);
                 _cityCode = code;
                 _cityName = name;
                 SaveSettings();
@@ -1545,6 +1557,19 @@ namespace DesktopPet
             return "";
         }
 
+        private static string DecideWeatherParticle(WeatherInfo wi)
+        {
+            string w = wi.Weather;
+            if (!string.IsNullOrEmpty(w))
+            {
+                if (w.Contains("雪")) return "snow";
+                if (w.Contains("雨") || w.Contains("冰雹")) return "rain";
+            }
+            if (wi.TempNow >= 33 || wi.TempHigh >= 34) return "hot";
+            if (wi.TempNow <= 2 || (wi.TempLow > -9000 && wi.TempLow <= 0)) return "cold";
+            return "";
+        }
+
         private void EnsureWeatherOverlays()
         {
             if (_char == null) return;
@@ -1598,7 +1623,6 @@ namespace DesktopPet
             {
                 if (_hotOverlay != null)
                     g.DrawImage(_hotOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
-                DrawSteam(g, cx, top, cw, chh, t);
             }
             else if (_weatherFx == "cold")
             {
@@ -1606,6 +1630,128 @@ namespace DesktopPet
                     g.DrawImage(_coldOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
                 DrawIcicles(g, cx, top, cw, chh, t);
             }
+        }
+
+        private void DrawWeatherParticles(Graphics g, int w, int h)
+        {
+            if (_weatherParticle.Length == 0)
+            {
+                if (_particles.Count > 0) _particles.Clear();
+                _lastParticleType = "";
+                return;
+            }
+            if (_weatherParticle != _lastParticleType)
+            {
+                _lastParticleType = _weatherParticle;
+                _particles.Clear();
+                _lastParticleTick = 0;
+            }
+            double now = DateTime.UtcNow.Ticks / 10000000.0;
+            double dt = now - _lastParticleTick;
+            if (dt <= 0 || dt > 0.1) dt = 0.033;
+            bool warmup = (_lastParticleTick == 0);
+            _lastParticleTick = now;
+
+            float bottom = h - 3f;
+            float chh = (float)(_charH * _scale);
+            float cw = (float)(_charW * _scale);
+            float cx = w / 2f;
+            float top = bottom - chh;
+            Random rng = _rng;
+
+            if (_particles.Count < 70)
+            {
+                double rate = 0;
+                if (_weatherParticle == "rain") rate = 30;
+                else if (_weatherParticle == "snow") rate = 14;
+                else if (_weatherParticle == "hot") rate = 10;
+                else if (_weatherParticle == "cold") rate = 8;
+                int n = (int)(rate * dt);
+                if (rng.NextDouble() < rate * dt - n) n++;
+                if (warmup) n = (_weatherParticle == "rain") ? 42 : (_weatherParticle == "snow") ? 22 : 12;
+                for (int i = 0; i < n; i++)
+                {
+                    WeatherParticle p = new WeatherParticle();
+                    p.type = _weatherParticle;
+                    p.phase = (float)(rng.NextDouble() * Math.PI * 2);
+                    bool spread = warmup;
+                    if (p.type == "rain")
+                    {
+                        p.x = (float)(rng.NextDouble() * (w + 20) - 10);
+                        p.y = spread ? (float)(rng.NextDouble() * h) : (float)(rng.NextDouble() * 14 - 14);
+                        p.vy = h * (1.25f + (float)rng.NextDouble() * 0.5f);
+                        p.vx = p.vy * 0.22f;
+                        p.size = 7f + (float)rng.NextDouble() * 5f;
+                        p.amp = 0f;
+                        p.maxLife = (int)((h + 30) / p.vy * 1000);
+                    }
+                    else if (p.type == "snow")
+                    {
+                        p.x = (float)(rng.NextDouble() * (w + 16) - 8);
+                        p.y = spread ? (float)(rng.NextDouble() * h) : (float)(rng.NextDouble() * 10 - 10);
+                        p.vy = 26f + (float)rng.NextDouble() * 26f;
+                        p.vx = 4f + (float)rng.NextDouble() * 6f;
+                        p.size = 1.6f + (float)rng.NextDouble() * 2.2f;
+                        p.amp = 9f + (float)rng.NextDouble() * 8f;
+                        p.maxLife = 3200;
+                    }
+                    else if (p.type == "hot")
+                    {
+                        p.x = cx + (float)(rng.NextDouble() - 0.5) * cw * 0.8f;
+                        p.y = spread ? top + (float)(rng.NextDouble() * chh * 0.8f) : top + (float)(rng.NextDouble() * chh * 0.4f);
+                        p.vy = -(55f + (float)rng.NextDouble() * 35f);
+                        p.vx = (float)(rng.NextDouble() - 0.5) * 14f;
+                        p.size = 3f + (float)rng.NextDouble() * 3.5f;
+                        p.amp = 6f + (float)rng.NextDouble() * 5f;
+                        p.maxLife = 1600;
+                    }
+                    else // cold
+                    {
+                        p.x = (float)(rng.NextDouble() * w);
+                        p.y = (float)(rng.NextDouble() * h);
+                        p.vy = -(8f + (float)rng.NextDouble() * 12f);
+                        p.vx = (float)(rng.NextDouble() - 0.5) * 10f;
+                        p.size = 2f + (float)rng.NextDouble() * 2.5f;
+                        p.amp = 10f + (float)rng.NextDouble() * 8f;
+                        p.maxLife = 2200;
+                    }
+                    p.life = spread ? (int)(p.maxLife * (0.35 + rng.NextDouble() * 0.6)) : p.maxLife;
+                    _particles.Add(p);
+                }
+            }
+
+            _particles.RemoveAll(delegate(WeatherParticle p)
+            {
+                p.life -= (int)(dt * 1000);
+                if (p.life <= 0) return true;
+                float k = (float)p.life / p.maxLife;
+                p.x += p.vx * (float)dt;
+                p.y += p.vy * (float)dt;
+                float drawX = p.x + (float)(Math.Sin(now * 2.2 + p.phase) * p.amp);
+                float prog = 1f - k;
+                float a = prog < 0.15f ? prog / 0.15f : (prog > 0.7f ? (1f - prog) / 0.3f : 1f);
+                int alpha = (int)(165 * a);
+                if (alpha <= 3) return true;
+                if (p.type == "rain")
+                {
+                    using (Pen pen = new Pen(Color.FromArgb(alpha, 160, 200, 255), Math.Max(1f, p.size * 0.09f)))
+                    {
+                        g.DrawLine(pen, drawX, p.y, drawX - p.vx * 0.06f, p.y - p.vy * 0.06f);
+                    }
+                }
+                else
+                {
+                    float s = p.size * (1f + (1f - k) * 0.8f);
+                    Color col = (p.type == "snow") ? Color.FromArgb(alpha, 245, 250, 255)
+                             : (p.type == "hot") ? Color.FromArgb(alpha, 255, 235, 210)
+                             : Color.FromArgb(alpha, 215, 235, 255);
+                    using (SolidBrush b = new SolidBrush(col))
+                    {
+                        g.FillEllipse(b, drawX - s / 2f, p.y - s / 2f, s, s);
+                    }
+                }
+                return false;
+            });
         }
 
         private void DrawUmbrellaHandle(Graphics g, int w, int h)
@@ -1657,23 +1803,6 @@ namespace DesktopPet
             using (SolidBrush b = new SolidBrush(Color.FromArgb(255, 255, 240, 200)))
             {
                 g.FillEllipse(b, cx - cw * 0.015f, sy - cw * 0.03f, cw * 0.03f, cw * 0.03f);
-            }
-        }
-
-        private void DrawSteam(Graphics g, float cx, float top, float cw, float chh, double t)
-        {
-            for (int i = 0; i < 3; i++)
-            {
-                double k = (t * 0.55 + i * 0.37) % 1.0;
-                float x = cx + (i - 1) * cw * 0.22f + (float)(Math.Sin((t + i) * 2.1) * cw * 0.04);
-                float y = top + chh * 0.02f - (float)(k * chh * 0.22f);
-                float s = (4f + 11f * (float)k) * (float)_scale;
-                int alpha = (int)(150 * (1.0 - k));
-                if (alpha <= 0) continue;
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(alpha, 255, 255, 255)))
-                {
-                    g.FillEllipse(b, x - s / 2f, y - s / 2f, s, s);
-                }
             }
         }
 
@@ -1931,6 +2060,7 @@ namespace DesktopPet
                         DrawPet(g, w, h, p);
                         DrawEffect(g, w, h);
                         if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
+                        DrawWeatherParticles(g, w, h);
                     }
                     LayeredPainter.Push(Handle, surface, Location.X, Location.Y, _winAlpha);
                 }
@@ -2250,13 +2380,20 @@ namespace DesktopPet
             }
             BubbleForm b = new BubbleForm();
             f._weatherFx = "umbrella";
+            f._weatherParticle = "rain";
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_umbrella.png"));
+            f._weatherFx = "umbrella";
+            f._weatherParticle = "snow";
+            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_snow.png"));
             f._weatherFx = "hot";
+            f._weatherParticle = "hot";
             f.EnsureWeatherOverlays();
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_hot.png"));
             f._weatherFx = "cold";
+            f._weatherParticle = "cold";
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_cold.png"));
             f._weatherFx = "";
+            f._weatherParticle = "";
             b.CreateControl();
             b.SetText("测试气泡内容，看看文字排版～", 220, 60);
             b.SaveFrame(System.IO.Path.Combine(outDir, "bubble.png"));
@@ -2326,6 +2463,7 @@ namespace DesktopPet
                     DrawPet(g, w, h, p);
                     DrawEffect(g, w, h);
                     if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
+                    DrawWeatherParticles(g, w, h);
                 }
                 bmp.Save(path, ImageFormat.Png);
             }
