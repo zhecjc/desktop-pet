@@ -206,7 +206,6 @@ namespace DesktopPet
         private BubbleForm _bubble;
         private ContextMenuStrip _menu;
         private ToolStripMenuItem _miTopmost;
-        private ToolStripMenuItem[] _miSizes;
 
         private byte _winAlpha = 255;
         private bool _closing;
@@ -1340,17 +1339,6 @@ namespace DesktopPet
             };
             _menu.Items.Add(_miAutoStart);
 
-            ToolStripMenuItem miSize = new ToolStripMenuItem("调整大小");
-            double[] sizes = new double[] { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
-            _miSizes = new ToolStripMenuItem[sizes.Length];
-            for (int i = 0; i < sizes.Length; i++)
-            {
-                double s = sizes[i];
-                _miSizes[i] = new ToolStripMenuItem(PercentText(s), null, delegate { ApplyScale(s, false); });
-                miSize.DropDownItems.Add(_miSizes[i]);
-            }
-            _menu.Items.Add(miSize);
-
             _miTopmost = new ToolStripMenuItem("置顶显示");
             _miTopmost.Checked = _topmost;
             _miTopmost.Click += delegate
@@ -1475,7 +1463,6 @@ namespace DesktopPet
 
         private void RefreshMenuState()
         {
-            UpdateSizeChecks();
             if (_miWeather != null)
                 _miWeather.Text = _cityName.Length > 0 ? "天气城市：" + _cityName : "天气：未设置城市";
             if (_miFxItems != null)
@@ -1493,10 +1480,6 @@ namespace DesktopPet
             RefreshCharacterMenu();
         }
 
-        private static string PercentText(double s)
-        {
-            return ((int)Math.Round(s * 100)).ToString() + "%";
-        }
         private void TriggerRandomInteraction()
         {
             AddMood(8);
@@ -2727,7 +2710,6 @@ namespace DesktopPet
                 if (e.Button == MouseButtons.Right && _menu != null)
                 {
                     Native.ReleaseCapture();
-                    UpdateSizeChecks();
                     _menu.Show(this, e.Location);
                     InstallMenuHooks();
                 }
@@ -2738,7 +2720,6 @@ namespace DesktopPet
                 if (_menu != null)
                 {
                     Native.ReleaseCapture();
-                    UpdateSizeChecks();
                     _menu.Show(this, e.Location);
                     InstallMenuHooks();
                 }
@@ -2787,24 +2768,6 @@ namespace DesktopPet
             ApplyScale(_scale * factor, true);
         }
 
-        private void UpdateSizeChecks()
-        {
-            if (_miSizes == null) return;
-            int best = 0;
-            double bestDiff = double.MaxValue;
-            for (int i = 0; i < _miSizes.Length; i++)
-            {
-                double s = 0.5 + 0.25 * i;
-                if (i >= 3) s = 1.0 + 0.25 * (i - 2);
-                if (i >= 5) s = 2.0;
-                double diff = Math.Abs(_scale - s);
-                if (diff < bestDiff) { bestDiff = diff; best = i; }
-            }
-            for (int i = 0; i < _miSizes.Length; i++)
-            {
-                _miSizes[i].Checked = (i == best);
-            }
-        }
     }
 
     internal class BubbleForm : Form
