@@ -252,6 +252,7 @@ namespace DesktopPet
         private string _weatherParticle = "";
         private Bitmap _hotOverlay;
         private Bitmap _coldOverlay;
+        private Bitmap _overlaySource;
         private readonly List<WeatherParticle> _particles = new List<WeatherParticle>();
         private double _lastParticleTick;
         private string _lastParticleType = "";
@@ -707,6 +708,7 @@ namespace DesktopPet
                 _charH = c.Height;
                 _hotOverlay = null;
                 _coldOverlay = null;
+                _overlaySource = null;
                 string p1 = FindImage(dir, "pose1");
                 string p2 = FindImage(dir, "pose2");
                 _pose1 = (p1 != null) ? PrepareCharacterImage(p1) : null;
@@ -729,6 +731,7 @@ namespace DesktopPet
             LoadCharacter();
             _hotOverlay = null;
             _coldOverlay = null;
+            _overlaySource = null;
             ApplyScale(_scale, false);
             SaveSettings();
             ShowBubble("已切换回内置角色");
@@ -1499,7 +1502,6 @@ namespace DesktopPet
                 if (fx != _weatherFx)
                 {
                     _weatherFx = fx;
-                    EnsureWeatherOverlays();
                 }
                 _weatherParticle = ResolveWeatherParticle(wi);
                 _cityCode = code;
@@ -1634,7 +1636,7 @@ namespace DesktopPet
             if (k == "hot" || k == "cold")
             {
                 _weatherFx = k;
-                EnsureWeatherOverlays();
+                EnsureWeatherOverlays(CurrentPose() ?? _char);
             }
             else
             {
@@ -1645,11 +1647,17 @@ namespace DesktopPet
             SafeBubble("天气效果预览：" + label);
         }
 
-        private void EnsureWeatherOverlays()
+        private void EnsureWeatherOverlays(Bitmap src)
         {
-            if (_char == null) return;
-            if (_hotOverlay == null) _hotOverlay = MakeTint(_char, 255, 80, 70, 0.34f);
-            if (_coldOverlay == null) _coldOverlay = MakeTint(_char, 135, 200, 255, 0.45f);
+            if (src == null) return;
+            if (_overlaySource != src || _hotOverlay == null || _coldOverlay == null)
+            {
+                if (_hotOverlay != null) _hotOverlay.Dispose();
+                if (_coldOverlay != null) _coldOverlay.Dispose();
+                _hotOverlay = MakeTint(src, 255, 80, 70, 0.34f);
+                _coldOverlay = MakeTint(src, 135, 200, 255, 0.45f);
+                _overlaySource = src;
+            }
         }
 
         private static Bitmap MakeTint(Bitmap src, int r, int g, int b, float alphaMul)
@@ -1683,11 +1691,23 @@ namespace DesktopPet
         private void DrawWeatherFx(Graphics g, int w, int h, Pose p)
         {
             if (_weatherFx.Length == 0) return;
+            Bitmap src = CurrentPose();
+            if (src == null) src = _char;
+            EnsureWeatherOverlays(src);
             float bottom = h - 3f;
-            float chh = (float)(_charH * _scale);
-            float cw = (float)(_charW * _scale);
+            float cw = (float)(_charW * _scale) * p.sx;
+            float chh = (float)(_charH * _scale) * p.sy;
             float cx = w / 2f;
             double t = DateTime.UtcNow.Ticks / 10000000.0; // 秒
+
+            // 与 DrawPet 相同的绘制区域（姿势图按比例 fit）
+            float dw = cw, dh = chh;
+            if (src != _char)
+            {
+                float fit = Math.Min(cw / src.Width, chh / src.Height);
+                dw = src.Width * fit;
+                dh = src.Height * fit;
+            }
 
             if (_weatherFx == "hot")
             {
@@ -1695,7 +1715,7 @@ namespace DesktopPet
                 g.RotateTransform(p.rot);
                 g.TranslateTransform(p.ox, 0f);
                 if (_hotOverlay != null)
-                    g.DrawImage(_hotOverlay, new RectangleF(-cw / 2f, -chh, cw, chh));
+                    g.DrawImage(_hotOverlay, new RectangleF(-dw / 2f, -dh, dw, dh));
                 g.ResetTransform();
             }
             else if (_weatherFx == "cold")
@@ -1704,8 +1724,8 @@ namespace DesktopPet
                 g.RotateTransform(p.rot);
                 g.TranslateTransform(p.ox, 0f);
                 if (_coldOverlay != null)
-                    g.DrawImage(_coldOverlay, new RectangleF(-cw / 2f, -chh, cw, chh));
-                DrawIcicles(g, cw, chh, t);
+                    g.DrawImage(_coldOverlay, new RectangleF(-dw / 2f, -dh, dw, dh));
+                DrawIcicles(g, cw, dh, t);
                 g.ResetTransform();
             }
         }
@@ -2417,8 +2437,12 @@ namespace DesktopPet
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_snow.png"));
             f._weatherFx = "hot";
             f._weatherParticle = "hot";
-            f.EnsureWeatherOverlays();
+            f.EnsureWeatherOverlays(f._char);
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_hot.png"));
+            f._anim = "pose1";
+            f._poseImg = "pose1";
+            f._weatherFx = "hot";
+            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_hot_pose1.png"));
             f._weatherFx = "cold";
             f._weatherParticle = "cold";
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_cold.png"));
