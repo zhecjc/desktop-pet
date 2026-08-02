@@ -1,0 +1,10 @@
+# Reasonix 工具元数据
+.reasonix/
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统文件
+.DS_Store
+Thumbs.db
