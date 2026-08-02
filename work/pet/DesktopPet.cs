@@ -238,6 +238,15 @@ namespace DesktopPet
         private ToolStripMenuItem _miMood;
         private ToolStripMenuItem _miWander;
         private ToolStripMenuItem _miAutoStart;
+        private ToolStripMenuItem _miHang;
+        private ToolStripMenuItem _miCurious;
+        private bool _hangEnabled;
+        private bool _hanging;
+        private float _hangBaseY;
+        private int _hangSide = 1;
+        private bool _curiousEnabled;
+        private bool _mouseNear;
+        private DateTime _curiousAnimAt;
         private ToolStripMenuItem _miWeather;
         private ToolStripMenuItem[] _miFxItems;
         private bool _weatherBusy;
@@ -502,6 +511,14 @@ namespace DesktopPet
                         {
                             _wanderEnabled = line.Substring(7).Trim() == "1";
                         }
+                        else if (line.StartsWith("hang="))
+                        {
+                            _hangEnabled = line.Substring(5).Trim() == "1";
+                        }
+                        else if (line.StartsWith("curious="))
+                        {
+                            _curiousEnabled = line.Substring(8).Trim() == "1";
+                        }
                         else if (line.StartsWith("citycode="))
                         {
                             _cityCode = line.Substring(9).Trim();
@@ -526,6 +543,8 @@ namespace DesktopPet
                            "topmost=" + (_topmost ? "1" : "0") + "\r\n" +
                            "char=" + _charName + "\r\n" +
                            "wander=" + (_wanderEnabled ? "1" : "0") + "\r\n" +
+                           "hang=" + (_hangEnabled ? "1" : "0") + "\r\n" +
+                           "curious=" + (_curiousEnabled ? "1" : "0") + "\r\n" +
                            "citycode=" + _cityCode + "\r\n" +
                            "cityname=" + _cityName + "\r\n";
                 File.WriteAllText(_settingsPath, s);
@@ -1030,7 +1049,7 @@ namespace DesktopPet
         private void TickWander()
         {
             DateTime now = DateTime.UtcNow;
-            if (!_wanderEnabled || _mouseDown || _dragging || IsAnimating())
+            if (!_wanderEnabled || _hanging || (_curiousEnabled && _mouseNear) || _mouseDown || _dragging || IsAnimating())
             {
                 if (_mouseDown || _dragging) _wanderTarget = null;
                 _waddling = false;
@@ -1068,6 +1087,82 @@ namespace DesktopPet
                 int tx = wa.X + 30 + _rng.Next(Math.Max(1, wa.Width - w - 60));
                 int ty = wa.Y + 30 + _rng.Next(Math.Max(1, wa.Height - h - 60));
                 _wanderTarget = new Point(tx, ty);
+            }
+        }
+
+        private void TickHang()
+        {
+            if (!_hangEnabled || _closing) return;
+            if (_mouseDown || _dragging)
+            {
+                if (_hanging) _hanging = false;
+                return;
+            }
+            Rectangle wa = Screen.FromPoint(Location).WorkingArea;
+            int w = ClientSize.Width;
+            if (!_hanging)
+            {
+                int leftD = Math.Abs(Location.X - wa.X);
+                int rightD = Math.Abs((Location.X + w) - wa.Right);
+                if (leftD <= 60 || rightD <= 60)
+                {
+                    _hanging = true;
+                    _hangSide = (leftD <= rightD) ? -1 : 1;
+                    _hangBaseY = Location.Y;
+                }
+            }
+            if (_hanging)
+            {
+                int x = (_hangSide < 0) ? wa.X + 2 : wa.Right - w - 2;
+                double sway = Math.Sin(DateTime.UtcNow.Ticks / 10000000.0 * 2.2) * 10.0 * _scale;
+                Location = new Point(x, (int)Math.Round(_hangBaseY + sway));
+            }
+        }
+
+        private void TickCurious()
+        {
+            if (!_curiousEnabled || _closing) return;
+            if (_mouseDown || _dragging || _hanging)
+            {
+                _mouseNear = false;
+                return;
+            }
+            Point mp = Cursor.Position;
+            int cx = Location.X + ClientSize.Width / 2;
+            int cy = Location.Y + ClientSize.Height / 2;
+            double dx = mp.X - cx;
+            double dy = mp.Y - cy;
+            double dist = Math.Sqrt(dx * dx + dy * dy);
+            if (dist < 380 * _scale)
+            {
+                if (!_mouseNear)
+                {
+                    _mouseNear = true;
+                    _curiousAnimAt = DateTime.UtcNow.AddMilliseconds(500);
+                }
+                if (dist > 100 && !IsAnimating())
+                {
+                    double step = Math.Min(2.2 * _scale, dist - 100);
+                    int nx = (int)Math.Round(Location.X + dx / dist * step);
+                    int ny = (int)Math.Round(Location.Y + dy / dist * step);
+                    Location = new Point(nx, ny);
+                    _waddling = true;
+                    _waddlePhase = DateTime.UtcNow.TimeOfDay.TotalMilliseconds / 260.0 * 2.0 * Math.PI;
+                }
+                else
+                {
+                    _waddling = false;
+                    if (!IsAnimating() && DateTime.UtcNow >= _curiousAnimAt)
+                    {
+                        _curiousAnimAt = DateTime.UtcNow.AddMilliseconds(2800 + _rng.Next(2400));
+                        StartAnim("look", 900, "", 0);
+                    }
+                }
+            }
+            else
+            {
+                _mouseNear = false;
+                _waddling = false;
             }
         }
 
@@ -1176,6 +1271,28 @@ namespace DesktopPet
                 SaveSettings();
             };
             _menu.Items.Add(_miWander);
+
+            _miHang = new ToolStripMenuItem("屏幕挂边");
+            _miHang.Checked = _hangEnabled;
+            _miHang.Click += delegate
+            {
+                _hangEnabled = !_hangEnabled;
+                _miHang.Checked = _hangEnabled;
+                if (!_hangEnabled) _hanging = false;
+                SaveSettings();
+            };
+            _menu.Items.Add(_miHang);
+
+            _miCurious = new ToolStripMenuItem("好奇跟随鼠标");
+            _miCurious.Checked = _curiousEnabled;
+            _miCurious.Click += delegate
+            {
+                _curiousEnabled = !_curiousEnabled;
+                _miCurious.Checked = _curiousEnabled;
+                if (!_curiousEnabled) _mouseNear = false;
+                SaveSettings();
+            };
+            _menu.Items.Add(_miCurious);
 
             _miAutoStart = new ToolStripMenuItem("开机自启");
             _miAutoStart.Checked = IsAutoStartEnabled();
@@ -1335,6 +1452,8 @@ namespace DesktopPet
             }
             if (_miMood != null) _miMood.Text = "心情：" + MoodLabel();
             if (_miWander != null) _miWander.Checked = _wanderEnabled;
+            if (_miHang != null) _miHang.Checked = _hangEnabled;
+            if (_miCurious != null) _miCurious.Checked = _curiousEnabled;
             if (_miAutoStart != null) _miAutoStart.Checked = IsAutoStartEnabled();
             RefreshCharacterMenu();
         }
@@ -2071,6 +2190,8 @@ namespace DesktopPet
                 AddMood(-1);
             }
             TickWander();
+            TickHang();
+            TickCurious();
 
             if (!IsAnimating() && DateTime.UtcNow >= _idleNextAt)
             {
@@ -2135,6 +2256,18 @@ namespace DesktopPet
                 {
                     p.ox += (float)(3.5 * Math.Sin(_waddlePhase) * (float)_scale);
                     p.rot += (float)(2.5 * Math.Sin(_waddlePhase) * (float)_scale);
+                }
+                if (_hanging)
+                {
+                    double ht = DateTime.UtcNow.Ticks / 10000000.0;
+                    p.rot += (float)(2.5 * Math.Sin(ht * 2.2) * (double)_scale);
+                }
+                if (_curiousEnabled && _mouseNear)
+                {
+                    Point mp = Cursor.Position;
+                    int ccx = Location.X + ClientSize.Width / 2;
+                    p.rot += (float)(3.0 * Math.Sign(mp.X - ccx) * (double)_scale);
+                    p.sy = (float)(1.0 + 0.04 * Math.Sin(t));
                 }
                 return p;
             }
