@@ -1,0 +1,1 @@
+tap=2 first=测试台词一号 pose=1

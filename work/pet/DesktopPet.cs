@@ -244,6 +244,9 @@ namespace DesktopPet
         private string _cityName = "";
         private string _lastWeatherDay = "";
         private readonly object _weatherLock = new object();
+        private string _weatherFx = "";
+        private Bitmap _hotOverlay;
+        private Bitmap _coldOverlay;
 
         private IntPtr _menuHookMouse;
         private IntPtr _menuHookKey;
@@ -686,6 +689,8 @@ namespace DesktopPet
                 _char = c;
                 _charW = c.Width;
                 _charH = c.Height;
+                _hotOverlay = null;
+                _coldOverlay = null;
                 string p1 = FindImage(dir, "pose1");
                 string p2 = FindImage(dir, "pose2");
                 _pose1 = (p1 != null) ? PrepareCharacterImage(p1) : null;
@@ -706,6 +711,8 @@ namespace DesktopPet
             _charDir = "";
             _charName = "";
             LoadCharacter();
+            _hotOverlay = null;
+            _coldOverlay = null;
             ApplyScale(_scale, false);
             SaveSettings();
             ShowBubble("已切换回内置角色");
@@ -1432,7 +1439,14 @@ namespace DesktopPet
                     }
                 }
                 string page = HttpGetUtf8("http://d1.weather.com.cn/weather_index/" + code + ".html", "http://www.weather.com.cn/");
-                msg = ParseWeather(page, name);
+                WeatherInfo wi = ParseWeather(page, name);
+                msg = wi.Text;
+                string fx = DecideWeatherFx(wi);
+                if (fx != _weatherFx)
+                {
+                    _weatherFx = fx;
+                    EnsureWeatherOverlays();
+                }
                 _cityCode = code;
                 _cityName = name;
                 SaveSettings();
@@ -1459,8 +1473,29 @@ namespace DesktopPet
             }
         }
 
-        private static string ParseWeather(string page, string fallbackName)
+        private struct WeatherInfo
         {
+            public string Text;
+            public string Weather;
+            public int TempHigh;
+            public int TempLow;
+            public int TempNow;
+        }
+
+        private static int ParseIntTemp(string s)
+        {
+            int v;
+            if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out v))
+                return (v >= 900) ? -9999 : v;
+            double d;
+            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out d))
+                return (d >= 900) ? -9999 : (int)Math.Round(d);
+            return -9999;
+        }
+
+        private static WeatherInfo ParseWeather(string page, string fallbackName)
+        {
+            WeatherInfo wi = new WeatherInfo();
             string name = Regex.Match(page, "\"city\":\"([^\"]+)\"").Groups[1].Value;
             if (string.IsNullOrEmpty(name)) name = fallbackName;
 
@@ -1478,20 +1513,194 @@ namespace DesktopPet
             if (string.IsNullOrEmpty(weather)) weather = rw;
             if (string.IsNullOrEmpty(weather)) weather = "天气数据获取中";
 
+            wi.Weather = weather;
+            wi.TempHigh = ParseIntTemp(tHigh);
+            wi.TempLow = ParseIntTemp(tLow);
+            wi.TempNow = ParseIntTemp(rt);
+
             string line1 = "主人～今日天气播报！";
             string line2 = name + "：" + weather;
             string line3 = "";
-            if (!string.IsNullOrEmpty(tHigh) && tHigh != "999")
-                line3 = "气温 " + tLow + "℃~" + tHigh + "℃";
-            else if (!string.IsNullOrEmpty(tLow))
-                line3 = "气温约 " + tLow + "℃";
-            if (!string.IsNullOrEmpty(rt) && rt != "999")
-                line3 = line3.Length > 0 ? line3 + "　实时" + rt + "℃" : "实时温度 " + rt + "℃";
+            if (wi.TempHigh > -9000)
+                line3 = "气温 " + wi.TempLow + "℃~" + wi.TempHigh + "℃";
+            else if (wi.TempLow > -9000)
+                line3 = "气温约 " + wi.TempLow + "℃";
+            if (wi.TempNow > -9000)
+                line3 = line3.Length > 0 ? line3 + "　实时" + wi.TempNow + "℃" : "实时温度 " + wi.TempNow + "℃";
             string line4 = "";
             if (!string.IsNullOrEmpty(wd) || !string.IsNullOrEmpty(ws))
                 line4 = (wd + " " + ws).Trim();
             if (!string.IsNullOrEmpty(sd)) line4 = line4.Length > 0 ? line4 + " · 湿度" + sd : "湿度 " + sd;
-            return line1 + "\n" + line2 + (line3.Length > 0 ? "\n" + line3 : "") + (line4.Length > 0 ? "\n" + line4 : "");
+            wi.Text = line1 + "\n" + line2 + (line3.Length > 0 ? "\n" + line3 : "") + (line4.Length > 0 ? "\n" + line4 : "");
+            return wi;
+        }
+
+        private static string DecideWeatherFx(WeatherInfo wi)
+        {
+            string w = wi.Weather;
+            if (!string.IsNullOrEmpty(w) && (w.Contains("雨") || w.Contains("雪") || w.Contains("冰雹")))
+                return "umbrella";
+            if (wi.TempNow >= 33 || wi.TempHigh >= 34) return "hot";
+            if (wi.TempNow <= 2 || (wi.TempLow > -9000 && wi.TempLow <= 0)) return "cold";
+            return "";
+        }
+
+        private void EnsureWeatherOverlays()
+        {
+            if (_char == null) return;
+            if (_hotOverlay == null) _hotOverlay = MakeTint(_char, 255, 80, 70, 0.34f);
+            if (_coldOverlay == null) _coldOverlay = MakeTint(_char, 135, 200, 255, 0.45f);
+        }
+
+        private static Bitmap MakeTint(Bitmap src, int r, int g, int b, float alphaMul)
+        {
+            Bitmap bmp = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+            BitmapData sd = src.LockBits(new Rectangle(0, 0, src.Width, src.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            BitmapData bd = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                int stride = sd.Stride;
+                byte[] spx = new byte[stride * src.Height];
+                byte[] dpx = new byte[stride * src.Height];
+                Marshal.Copy(sd.Scan0, spx, 0, spx.Length);
+                for (int i = 0; i < spx.Length; i += 4)
+                {
+                    dpx[i] = (byte)b;
+                    dpx[i + 1] = (byte)g;
+                    dpx[i + 2] = (byte)r;
+                    dpx[i + 3] = (byte)(spx[i + 3] * alphaMul);
+                }
+                Marshal.Copy(dpx, 0, bd.Scan0, dpx.Length);
+            }
+            finally
+            {
+                src.UnlockBits(sd);
+                bmp.UnlockBits(bd);
+            }
+            return bmp;
+        }
+
+        private void DrawWeatherFx(Graphics g, int w, int h)
+        {
+            if (_weatherFx.Length == 0) return;
+            float bottom = h - 3f;
+            float chh = (float)(_charH * _scale);
+            float cw = (float)(_charW * _scale);
+            float cx = w / 2f;
+            float top = bottom - chh;
+            double t = DateTime.UtcNow.Ticks / 10000000.0; // 秒
+
+            if (_weatherFx == "umbrella")
+            {
+                DrawUmbrella(g, cx, top, cw, chh, t);
+            }
+            else if (_weatherFx == "hot")
+            {
+                if (_hotOverlay != null)
+                    g.DrawImage(_hotOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
+                DrawSteam(g, cx, top, cw, chh, t);
+            }
+            else if (_weatherFx == "cold")
+            {
+                if (_coldOverlay != null)
+                    g.DrawImage(_coldOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
+                DrawIcicles(g, cx, top, cw, chh, t);
+            }
+        }
+
+        private void DrawUmbrellaHandle(Graphics g, int w, int h)
+        {
+            float bottom = h - 3f;
+            float chh = (float)(_charH * _scale);
+            float cw = (float)(_charW * _scale);
+            float cx = w / 2f;
+            float top = bottom - chh;
+            float px = cx;
+            float py = top + chh * 0.02f;
+            float hx = cx + cw * 0.30f;
+            float hy = top + chh * 0.34f;
+            using (Pen pen = new Pen(Color.FromArgb(150, 120, 110, 100), Math.Max(2f, cw * 0.035f)))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                g.DrawLine(pen, px, py, hx, hy);
+                g.DrawArc(pen, hx - cw * 0.05f, hy - cw * 0.02f, cw * 0.10f, cw * 0.10f, 180, 120);
+            }
+        }
+
+        private void DrawUmbrella(Graphics g, float cx, float top, float cw, float chh, double t)
+        {
+            float bob = (float)(Math.Sin(t * 1.6) * 2.0 * _scale);
+            float sw = cw * 1.05f;
+            float sh = sw * 0.26f;
+            float sx = cx - sw / 2f;
+            float sy = top + chh * 0.05f - sh + bob;
+            using (GraphicsPath path = new GraphicsPath())
+            {
+                path.AddArc(sx, sy, sw, sh * 2f, 180, 180);
+                path.AddLine(sx + sw, sy + sh, sx, sy + sh);
+                path.CloseFigure();
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(235, 245, 130, 110)))
+                {
+                    g.FillPath(b, path);
+                }
+                using (Pen pen = new Pen(Color.FromArgb(220, 220, 90, 90), Math.Max(1.2f, cw * 0.012f)))
+                {
+                    g.DrawPath(pen, path);
+                    for (int i = 1; i < 4; i++)
+                    {
+                        float kx = sx + sw * i / 4f;
+                        g.DrawLine(pen, cx, sy + sh * 0.55f, kx, sy + sh);
+                    }
+                }
+            }
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(255, 255, 240, 200)))
+            {
+                g.FillEllipse(b, cx - cw * 0.015f, sy - cw * 0.03f, cw * 0.03f, cw * 0.03f);
+            }
+        }
+
+        private void DrawSteam(Graphics g, float cx, float top, float cw, float chh, double t)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                double k = (t * 0.55 + i * 0.37) % 1.0;
+                float x = cx + (i - 1) * cw * 0.22f + (float)(Math.Sin((t + i) * 2.1) * cw * 0.04);
+                float y = top + chh * 0.02f - (float)(k * chh * 0.22f);
+                float s = (4f + 11f * (float)k) * (float)_scale;
+                int alpha = (int)(150 * (1.0 - k));
+                if (alpha <= 0) continue;
+                using (SolidBrush b = new SolidBrush(Color.FromArgb(alpha, 255, 255, 255)))
+                {
+                    g.FillEllipse(b, x - s / 2f, y - s / 2f, s, s);
+                }
+            }
+        }
+
+        private void DrawIcicles(Graphics g, float cx, float top, float cw, float chh, double t)
+        {
+            float shim = (float)(Math.Sin(t * 2.2) * 0.5 + 0.5);
+            int n = 5;
+            using (SolidBrush b = new SolidBrush(Color.FromArgb(215, 200, 235, 255)))
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    float x = cx - cw / 2f + cw * (i + 0.5f) / n;
+                    float len = (6f + (i % 3) * 5f) * (float)_scale;
+                    PointF[] tri = new PointF[]
+                    {
+                        new PointF(x - 4f * (float)_scale, top),
+                        new PointF(x + 4f * (float)_scale, top),
+                        new PointF(x, top + len)
+                    };
+                    g.FillPolygon(b, tri);
+                }
+            }
+            using (SolidBrush b = new SolidBrush(Color.FromArgb((int)(140 + 90 * shim), 255, 255, 255)))
+            {
+                g.FillEllipse(b, cx + cw * 0.2f, top + chh * 0.1f, cw * 0.05f, cw * 0.05f);
+                g.FillEllipse(b, cx - cw * 0.25f, top + chh * 0.28f, cw * 0.035f, cw * 0.035f);
+            }
         }
 
         private static string HttpGetUtf8(string url, string referer)
@@ -1718,8 +1927,10 @@ namespace DesktopPet
                         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                         Pose p = ComputePose();
+                        if (_weatherFx == "umbrella") DrawUmbrellaHandle(g, w, h);
                         DrawPet(g, w, h, p);
                         DrawEffect(g, w, h);
+                        if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
                     }
                     LayeredPainter.Push(Handle, surface, Location.X, Location.Y, _winAlpha);
                 }
@@ -2038,6 +2249,14 @@ namespace DesktopPet
                 f.SaveFrame(System.IO.Path.Combine(outDir, "frame_" + a + ".png"));
             }
             BubbleForm b = new BubbleForm();
+            f._weatherFx = "umbrella";
+            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_umbrella.png"));
+            f._weatherFx = "hot";
+            f.EnsureWeatherOverlays();
+            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_hot.png"));
+            f._weatherFx = "cold";
+            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_cold.png"));
+            f._weatherFx = "";
             b.CreateControl();
             b.SetText("测试气泡内容，看看文字排版～", 220, 60);
             b.SaveFrame(System.IO.Path.Combine(outDir, "bubble.png"));
@@ -2103,8 +2322,10 @@ namespace DesktopPet
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     Pose p = ComputePose();
+                    if (_weatherFx == "umbrella") DrawUmbrellaHandle(g, w, h);
                     DrawPet(g, w, h, p);
                     DrawEffect(g, w, h);
+                    if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
                 }
                 bmp.Save(path, ImageFormat.Png);
             }
