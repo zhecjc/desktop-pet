@@ -1549,9 +1549,6 @@ namespace DesktopPet
 
         private static string DecideWeatherFx(WeatherInfo wi)
         {
-            string w = wi.Weather;
-            if (!string.IsNullOrEmpty(w) && (w.Contains("雨") || w.Contains("雪") || w.Contains("冰雹")))
-                return "umbrella";
             if (wi.TempNow >= 33 || wi.TempHigh >= 34) return "hot";
             if (wi.TempNow <= 2 || (wi.TempLow > -9000 && wi.TempLow <= 0)) return "cold";
             return "";
@@ -1615,11 +1612,7 @@ namespace DesktopPet
             float top = bottom - chh;
             double t = DateTime.UtcNow.Ticks / 10000000.0; // 秒
 
-            if (_weatherFx == "umbrella")
-            {
-                DrawUmbrella(g, cx, top, cw, chh, t);
-            }
-            else if (_weatherFx == "hot")
+            if (_weatherFx == "hot")
             {
                 if (_hotOverlay != null)
                     g.DrawImage(_hotOverlay, new RectangleF(cx - cw / 2f, top, cw, chh));
@@ -1752,58 +1745,6 @@ namespace DesktopPet
                 }
                 return false;
             });
-        }
-
-        private void DrawUmbrellaHandle(Graphics g, int w, int h)
-        {
-            float bottom = h - 3f;
-            float chh = (float)(_charH * _scale);
-            float cw = (float)(_charW * _scale);
-            float cx = w / 2f;
-            float top = bottom - chh;
-            float px = cx;
-            float py = top + chh * 0.02f;
-            float hx = cx + cw * 0.30f;
-            float hy = top + chh * 0.34f;
-            using (Pen pen = new Pen(Color.FromArgb(150, 120, 110, 100), Math.Max(2f, cw * 0.035f)))
-            {
-                pen.StartCap = LineCap.Round;
-                pen.EndCap = LineCap.Round;
-                g.DrawLine(pen, px, py, hx, hy);
-                g.DrawArc(pen, hx - cw * 0.05f, hy - cw * 0.02f, cw * 0.10f, cw * 0.10f, 180, 120);
-            }
-        }
-
-        private void DrawUmbrella(Graphics g, float cx, float top, float cw, float chh, double t)
-        {
-            float bob = (float)(Math.Sin(t * 1.6) * 2.0 * _scale);
-            float sw = cw * 1.05f;
-            float sh = sw * 0.26f;
-            float sx = cx - sw / 2f;
-            float sy = top + chh * 0.05f - sh + bob;
-            using (GraphicsPath path = new GraphicsPath())
-            {
-                path.AddArc(sx, sy, sw, sh * 2f, 180, 180);
-                path.AddLine(sx + sw, sy + sh, sx, sy + sh);
-                path.CloseFigure();
-                using (SolidBrush b = new SolidBrush(Color.FromArgb(235, 245, 130, 110)))
-                {
-                    g.FillPath(b, path);
-                }
-                using (Pen pen = new Pen(Color.FromArgb(220, 220, 90, 90), Math.Max(1.2f, cw * 0.012f)))
-                {
-                    g.DrawPath(pen, path);
-                    for (int i = 1; i < 4; i++)
-                    {
-                        float kx = sx + sw * i / 4f;
-                        g.DrawLine(pen, cx, sy + sh * 0.55f, kx, sy + sh);
-                    }
-                }
-            }
-            using (SolidBrush b = new SolidBrush(Color.FromArgb(255, 255, 240, 200)))
-            {
-                g.FillEllipse(b, cx - cw * 0.015f, sy - cw * 0.03f, cw * 0.03f, cw * 0.03f);
-            }
         }
 
         private void DrawIcicles(Graphics g, float cx, float top, float cw, float chh, double t)
@@ -2056,7 +1997,6 @@ namespace DesktopPet
                         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                         Pose p = ComputePose();
-                        if (_weatherFx == "umbrella") DrawUmbrellaHandle(g, w, h);
                         DrawPet(g, w, h, p);
                         DrawEffect(g, w, h);
                         if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
@@ -2379,10 +2319,10 @@ namespace DesktopPet
                 f.SaveFrame(System.IO.Path.Combine(outDir, "frame_" + a + ".png"));
             }
             BubbleForm b = new BubbleForm();
-            f._weatherFx = "umbrella";
+            f._weatherFx = "";
             f._weatherParticle = "rain";
-            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_umbrella.png"));
-            f._weatherFx = "umbrella";
+            f.SaveFrame(System.IO.Path.Combine(outDir, "frame_rain.png"));
+            f._weatherFx = "";
             f._weatherParticle = "snow";
             f.SaveFrame(System.IO.Path.Combine(outDir, "frame_snow.png"));
             f._weatherFx = "hot";
@@ -2459,7 +2399,6 @@ namespace DesktopPet
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     Pose p = ComputePose();
-                    if (_weatherFx == "umbrella") DrawUmbrellaHandle(g, w, h);
                     DrawPet(g, w, h, p);
                     DrawEffect(g, w, h);
                     if (_weatherFx.Length > 0) DrawWeatherFx(g, w, h);
