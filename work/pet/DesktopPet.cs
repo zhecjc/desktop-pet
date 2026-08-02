@@ -245,6 +245,7 @@ namespace DesktopPet
         private string _cityName = "";
         private bool _cityLocated;
         private string _lastWeatherDay = "";
+        private DateTime _nextWeatherRefresh;
         private readonly object _weatherLock = new object();
         private string _fxOverride = "";
         private string _weatherFx = "";
@@ -359,6 +360,7 @@ namespace DesktopPet
             _timer.Interval = 33;
             _timer.Tick += OnTick;
             _idleNextAt = DateTime.UtcNow.AddMilliseconds(_rng.Next(8000, 16000));
+            _nextWeatherRefresh = DateTime.UtcNow.AddMinutes(30);
         }
 
         protected override CreateParams CreateParams
@@ -1443,7 +1445,18 @@ namespace DesktopPet
             }
             _lastWeatherDay = DateTime.Now.ToString("yyyyMMdd");
             if (announce) SafeBubble("正在查询今日天气…");
-            ThreadPool.QueueUserWorkItem(delegate { DoWeatherQuery(announce); });
+            ThreadPool.QueueUserWorkItem(delegate { DoWeatherQuery(announce, false); });
+        }
+
+        private void QueryWeatherSilent()
+        {
+            lock (_weatherLock)
+            {
+                if (_weatherBusy) return;
+                _weatherBusy = true;
+            }
+            _nextWeatherRefresh = DateTime.UtcNow.AddMinutes(30);
+            ThreadPool.QueueUserWorkItem(delegate { DoWeatherQuery(false, true); });
         }
 
         private void SafeBubble(string text)
@@ -1456,7 +1469,7 @@ namespace DesktopPet
             catch { }
         }
 
-        private void DoWeatherQuery(bool announce)
+        private void DoWeatherQuery(bool announce, bool silent)
         {
             string msg = "";
             try
@@ -1505,7 +1518,7 @@ namespace DesktopPet
                     if (IsHandleCreated && !IsDisposed)
                         BeginInvoke(new Action(delegate
                         {
-                            ShowBubble(m);
+                            if (!silent) ShowBubble(m);
                             lock (_weatherLock) { _weatherBusy = false; }
                         }));
                     else
@@ -2020,6 +2033,10 @@ namespace DesktopPet
             {
                 _lastWeatherDay = today;
                 QueryWeather(true);
+            }
+            if (DateTime.UtcNow >= _nextWeatherRefresh)
+            {
+                QueryWeatherSilent();
             }
             if (DateTime.UtcNow >= _moodDecayAt)
             {
