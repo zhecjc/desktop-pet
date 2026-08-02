@@ -242,6 +242,7 @@ namespace DesktopPet
         private bool _weatherBusy;
         private string _cityCode = "";
         private string _cityName = "";
+        private bool _cityLocated;
         private string _lastWeatherDay = "";
         private readonly object _weatherLock = new object();
         private string _weatherFx = "";
@@ -1440,14 +1441,21 @@ namespace DesktopPet
             {
                 string code = _cityCode;
                 string name = _cityName;
-                if (string.IsNullOrEmpty(code))
+                if (!_cityLocated)
                 {
+                    // 每次启动首次查询都重新 IP 定位（手动设置仅当前会话生效）
                     LocateCity(out code, out name);
+                    if (string.IsNullOrEmpty(code))
+                    {
+                        code = _cityCode;
+                        name = _cityName;
+                    }
                     if (string.IsNullOrEmpty(code))
                     {
                         code = "101010100";
                         name = "北京";
                     }
+                    _cityLocated = true;
                 }
                 string page = HttpGetUtf8("http://d1.weather.com.cn/weather_index/" + code + ".html", "http://www.weather.com.cn/");
                 WeatherInfo wi = ParseWeather(page, name);
@@ -1899,6 +1907,7 @@ namespace DesktopPet
             _cityCode = code;
             if (string.IsNullOrEmpty(name)) name = input;
             _cityName = name;
+            _cityLocated = true; // 手动设置后本会话不再自动重新定位
             SaveSettings();
             QueryWeather(true);
         }
