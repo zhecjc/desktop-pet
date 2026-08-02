@@ -6,8 +6,12 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace DesktopPet
@@ -234,6 +238,12 @@ namespace DesktopPet
         private ToolStripMenuItem _miMood;
         private ToolStripMenuItem _miWander;
         private ToolStripMenuItem _miAutoStart;
+        private ToolStripMenuItem _miWeather;
+        private bool _weatherBusy;
+        private string _cityCode = "";
+        private string _cityName = "";
+        private string _lastWeatherDay = "";
+        private readonly object _weatherLock = new object();
 
         private IntPtr _menuHookMouse;
         private IntPtr _menuHookKey;
@@ -363,6 +373,11 @@ namespace DesktopPet
             base.OnShown(e);
             _timer.Start();
             RenderFrame();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                Thread.Sleep(3000);
+                QueryWeather(true);
+            });
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -467,6 +482,14 @@ namespace DesktopPet
                         {
                             _wanderEnabled = line.Substring(7).Trim() == "1";
                         }
+                        else if (line.StartsWith("citycode="))
+                        {
+                            _cityCode = line.Substring(9).Trim();
+                        }
+                        else if (line.StartsWith("cityname="))
+                        {
+                            _cityName = line.Substring(9).Trim();
+                        }
                     }
                 }
             }
@@ -482,7 +505,9 @@ namespace DesktopPet
                 string s = "scale=" + _scale.ToString("0.00", CultureInfo.InvariantCulture) + "\r\n" +
                            "topmost=" + (_topmost ? "1" : "0") + "\r\n" +
                            "char=" + _charName + "\r\n" +
-                           "wander=" + (_wanderEnabled ? "1" : "0") + "\r\n";
+                           "wander=" + (_wanderEnabled ? "1" : "0") + "\r\n" +
+                           "citycode=" + _cityCode + "\r\n" +
+                           "cityname=" + _cityName + "\r\n";
                 File.WriteAllText(_settingsPath, s);
             }
             catch { }
@@ -1068,6 +1093,12 @@ namespace DesktopPet
             _menu.Opening += delegate { RefreshMenuState(); };
             _menu.Items.Add("随机互动一下", null, delegate { TriggerRandomInteraction(); });
 
+            _menu.Items.Add("今日天气", null, delegate { QueryWeather(true); });
+            _menu.Items.Add("设置城市…", null, delegate { PromptCity(); });
+            _miWeather = new ToolStripMenuItem("天气：未设置城市");
+            _miWeather.Enabled = false;
+            _menu.Items.Add(_miWeather);
+
             ToolStripMenuItem miPomo = new ToolStripMenuItem("番茄钟");
             miPomo.DropDownItems.Add("开始 25 分钟专注", null, delegate { StartPomodoro(); });
             miPomo.DropDownItems.Add("开始 5 分钟休息", null, delegate { StartRest(); });
@@ -1254,6 +1285,8 @@ namespace DesktopPet
         private void RefreshMenuState()
         {
             UpdateSizeChecks();
+            if (_miWeather != null)
+                _miWeather.Text = _cityName.Length > 0 ? "天气城市：" + _cityName : "天气：未设置城市";
             if (_miMood != null) _miMood.Text = "心情：" + MoodLabel();
             if (_miWander != null) _miWander.Checked = _wanderEnabled;
             if (_miAutoStart != null) _miAutoStart.Checked = IsAutoStartEnabled();
@@ -1360,6 +1393,259 @@ namespace DesktopPet
             }
         }
 
+        private void QueryWeather(bool announce)
+        {
+            lock (_weatherLock)
+            {
+                if (_weatherBusy) return;
+                _weatherBusy = true;
+            }
+            _lastWeatherDay = DateTime.Now.ToString("yyyyMMdd");
+            if (announce) SafeBubble("正在查询今日天气…");
+            ThreadPool.QueueUserWorkItem(delegate { DoWeatherQuery(announce); });
+        }
+
+        private void SafeBubble(string text)
+        {
+            try
+            {
+                if (IsHandleCreated && !IsDisposed)
+                    BeginInvoke(new Action(delegate { ShowBubble(text); }));
+            }
+            catch { }
+        }
+
+        private void DoWeatherQuery(bool announce)
+        {
+            string msg = "";
+            try
+            {
+                string code = _cityCode;
+                string name = _cityName;
+                if (string.IsNullOrEmpty(code))
+                {
+                    LocateCity(out code, out name);
+                    if (string.IsNullOrEmpty(code))
+                    {
+                        code = "101010100";
+                        name = "北京";
+                    }
+                }
+                string page = HttpGetUtf8("http://d1.weather.com.cn/weather_index/" + code + ".html", "http://www.weather.com.cn/");
+                msg = ParseWeather(page, name);
+                _cityCode = code;
+                _cityName = name;
+                SaveSettings();
+            }
+            catch (Exception ex)
+            {
+                msg = "天气查询失败(>_<)\n" + (announce ? "请检查网络后重试～" : "主人，网络好像不太给力～");
+            }
+            finally
+            {
+                string m = msg;
+                try
+                {
+                    if (IsHandleCreated && !IsDisposed)
+                        BeginInvoke(new Action(delegate
+                        {
+                            ShowBubble(m);
+                            lock (_weatherLock) { _weatherBusy = false; }
+                        }));
+                    else
+                        lock (_weatherLock) { _weatherBusy = false; }
+                }
+                catch { lock (_weatherLock) { _weatherBusy = false; } }
+            }
+        }
+
+        private static string ParseWeather(string page, string fallbackName)
+        {
+            string name = Regex.Match(page, "\"city\":\"([^\"]+)\"").Groups[1].Value;
+            if (string.IsNullOrEmpty(name)) name = fallbackName;
+
+            string tHigh = Regex.Match(page, "\"temp\":\"([^\"]+)\"").Groups[1].Value;
+            string tLow = Regex.Match(page, "\"tempn\":\"([^\"]+)\"").Groups[1].Value;
+            string weather = Regex.Match(page, "\"weather\":\"([^\"]+)\"").Groups[1].Value;
+
+            int i = page.IndexOf("var dataSK");
+            string sk = i >= 0 ? page.Substring(i) : page;
+            string rt = Regex.Match(sk, "\"temp\":\"([^\"]+)\"").Groups[1].Value;
+            string wd = Regex.Match(sk, "\"WD\":\"([^\"]+)\"").Groups[1].Value;
+            string ws = Regex.Match(sk, "\"WS\":\"([^\"]+)\"").Groups[1].Value;
+            string sd = Regex.Match(sk, "\"SD\":\"([^\"]+)\"").Groups[1].Value;
+            string rw = Regex.Match(sk, "\"weather\":\"([^\"]+)\"").Groups[1].Value;
+            if (string.IsNullOrEmpty(weather)) weather = rw;
+            if (string.IsNullOrEmpty(weather)) weather = "天气数据获取中";
+
+            string line1 = "主人～今日天气播报！";
+            string line2 = name + "：" + weather;
+            string line3 = "";
+            if (!string.IsNullOrEmpty(tHigh) && tHigh != "999")
+                line3 = "气温 " + tLow + "℃~" + tHigh + "℃";
+            else if (!string.IsNullOrEmpty(tLow))
+                line3 = "气温约 " + tLow + "℃";
+            if (!string.IsNullOrEmpty(rt) && rt != "999")
+                line3 = line3.Length > 0 ? line3 + "　实时" + rt + "℃" : "实时温度 " + rt + "℃";
+            string line4 = "";
+            if (!string.IsNullOrEmpty(wd) || !string.IsNullOrEmpty(ws))
+                line4 = (wd + " " + ws).Trim();
+            if (!string.IsNullOrEmpty(sd)) line4 = line4.Length > 0 ? line4 + " · 湿度" + sd : "湿度 " + sd;
+            return line1 + "\n" + line2 + (line3.Length > 0 ? "\n" + line3 : "") + (line4.Length > 0 ? "\n" + line4 : "");
+        }
+
+        private static string HttpGetUtf8(string url, string referer)
+        {
+            using (WebClient wc = new WebClient())
+            {
+                wc.Encoding = Encoding.UTF8;
+                wc.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+                if (!string.IsNullOrEmpty(referer))
+                    wc.Headers[HttpRequestHeader.Referer] = referer;
+                return wc.DownloadString(url);
+            }
+        }
+
+        private void LocateCity(out string code, out string name)
+        {
+            code = "";
+            name = "";
+            string city = "";
+            try
+            {
+                string s = HttpGetUtf8("http://pv.sohu.com/cityjson", null);
+                Match m = Regex.Match(s, "\"cname\"\\s*:\\s*\"([^\"]+)\"");
+                if (m.Success)
+                {
+                    city = m.Groups[1].Value;
+                    if (city == "未知" || city.Length < 2) city = "";
+                }
+            }
+            catch { }
+            if (string.IsNullOrEmpty(city))
+            {
+                try
+                {
+                    string j = HttpGetUtf8("http://ip-api.com/json/?lang=zh-CN&fields=status,city", null);
+                    Match m = Regex.Match(j, "\"city\"\\s*:\\s*\"([^\"]+)\"");
+                    if (m.Success && j.Contains("\"status\":\"success\"")) city = m.Groups[1].Value;
+                }
+                catch { }
+            }
+            if (string.IsNullOrEmpty(city)) return;
+            name = NormalizeCity(city);
+            code = CityNameToCode(name);
+            if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+        }
+
+        private static string NormalizeCity(string city)
+        {
+            string s = city;
+            string[] suf = { "特别行政区", "维吾尔自治区", "壮族自治区", "回族自治区", "自治区", "自治州", "自治县", "地区", "省", "市", "盟", "县" };
+            foreach (string t in suf)
+            {
+                if (s.EndsWith(t)) { s = s.Substring(0, s.Length - t.Length); break; }
+            }
+            return s.Trim();
+        }
+
+        private static readonly Dictionary<string, string> CityCodes = new Dictionary<string, string>()
+        {
+            { "北京", "101010100" }, { "上海", "101020100" }, { "天津", "101030100" }, { "重庆", "101040100" },
+            { "哈尔滨", "101050101" }, { "长春", "101060101" }, { "沈阳", "101070101" }, { "呼和浩特", "101080101" },
+            { "石家庄", "101090101" }, { "太原", "101100101" }, { "西安", "101110101" }, { "济南", "101120101" },
+            { "乌鲁木齐", "101130101" }, { "拉萨", "101140101" }, { "西宁", "101150101" }, { "兰州", "101160101" },
+            { "银川", "101170101" }, { "郑州", "101180101" }, { "南京", "101190101" }, { "武汉", "101200101" },
+            { "杭州", "101210101" }, { "合肥", "101220101" }, { "福州", "101230101" }, { "南昌", "101240101" },
+            { "长沙", "101250101" }, { "贵阳", "101260101" }, { "成都", "101270101" }, { "广州", "101280101" },
+            { "昆明", "101290101" }, { "南宁", "101300101" }, { "海口", "101310101" }, { "香港", "101320101" },
+            { "澳门", "101330101" }, { "台北", "101340101" },
+            { "深圳", "101280601" }, { "珠海", "101280701" }, { "佛山", "101280800" }, { "东莞", "101281601" },
+            { "中山", "101281701" }, { "惠州", "101280301" }, { "汕头", "101280501" }, { "湛江", "101281001" },
+            { "江门", "101281101" }, { "肇庆", "101280901" }, { "青岛", "101120201" }, { "大连", "101070201" },
+            { "厦门", "101230201" }, { "苏州", "101190401" }, { "宁波", "101210401" }, { "无锡", "101190201" },
+            { "温州", "101210701" }, { "泉州", "101230501" }, { "烟台", "101120501" }, { "徐州", "101190801" },
+            { "常州", "101191101" }, { "南通", "101190501" }, { "洛阳", "101180901" }, { "开封", "101180801" },
+            { "保定", "101090201" }, { "唐山", "101090501" }, { "廊坊", "101090601" }, { "秦皇岛", "101091101" },
+            { "邯郸", "101091001" }, { "吉林", "101060201" }, { "大庆", "101050901" }, { "绵阳", "101270401" },
+            { "乐山", "101271401" }, { "宜宾", "101271101" }, { "桂林", "101300501" }, { "柳州", "101300301" },
+            { "三亚", "101310201" }, { "遵义", "101260201" }, { "咸阳", "101110200" }, { "宝鸡", "101110901" },
+        };
+
+        private static string CityNameToCode(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "";
+            if (CityCodes.ContainsKey(name)) return CityCodes[name];
+            foreach (KeyValuePair<string, string> kv in CityCodes)
+            {
+                if (kv.Key.Contains(name) || name.Contains(kv.Key)) return kv.Value;
+            }
+            return "";
+        }
+
+        private static string CityCodeSearch(string name)
+        {
+            try
+            {
+                string s = HttpGetUtf8("http://toy1.weather.com.cn/search?cityname=" + Uri.EscapeDataString(name), "http://www.weather.com.cn/");
+                Match m = Regex.Match(s, "\"ref\"\\s*:\\s*\"(\\d+)");
+                if (m.Success) return m.Groups[1].Value;
+            }
+            catch { }
+            return "";
+        }
+
+        private void PromptCity()
+        {
+            string input = ShowPrompt("设置城市", "输入城市名（如：广州）或城市代码（如：101280101）：", _cityName);
+            if (string.IsNullOrEmpty(input)) return;
+            input = input.Trim();
+            string code = "";
+            string name = "";
+            if (Regex.IsMatch(input, "^\\d+$"))
+            {
+                code = input;
+            }
+            else
+            {
+                name = NormalizeCity(input);
+                code = CityNameToCode(name);
+                if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+            }
+            if (string.IsNullOrEmpty(code))
+            {
+                SafeBubble("没找到这个城市(>_<)\n试试输入城市代码？");
+                return;
+            }
+            _cityCode = code;
+            if (string.IsNullOrEmpty(name)) name = input;
+            _cityName = name;
+            SaveSettings();
+            QueryWeather(true);
+        }
+
+        private static string ShowPrompt(string title, string prompt, string defaultValue)
+        {
+            using (Form f = new Form())
+            {
+                f.Text = title;
+                f.FormBorderStyle = FormBorderStyle.FixedDialog;
+                f.StartPosition = FormStartPosition.CenterScreen;
+                f.ClientSize = new Size(380, 140);
+                Label lbl = new Label { Text = prompt, Location = new Point(12, 12), AutoSize = true, MaximumSize = new Size(356, 64) };
+                TextBox tb = new TextBox { Text = defaultValue, Location = new Point(12, 80), Width = 356 };
+                Button ok = new Button { Text = "确定", DialogResult = DialogResult.OK, Location = new Point(196, 106), Width = 80 };
+                Button cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(284, 106), Width = 80 };
+                f.Controls.Add(lbl);
+                f.Controls.Add(tb);
+                f.Controls.Add(ok);
+                f.Controls.Add(cancel);
+                f.AcceptButton = ok;
+                f.CancelButton = cancel;
+                return f.ShowDialog() == DialogResult.OK ? tb.Text.Trim() : null;
+            }
+        }
+
         private void ShowBubble(string text)
         {
             if (_bubble != null)
@@ -1384,6 +1670,12 @@ namespace DesktopPet
             }
 
             TickPomodoro();
+            string today = DateTime.Now.ToString("yyyyMMdd");
+            if (DateTime.Now.Hour >= 8 && _lastWeatherDay != today)
+            {
+                _lastWeatherDay = today;
+                QueryWeather(true);
+            }
             if (DateTime.UtcNow >= _moodDecayAt)
             {
                 _moodDecayAt = DateTime.UtcNow.AddSeconds(60);
