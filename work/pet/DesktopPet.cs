@@ -239,12 +239,14 @@ namespace DesktopPet
         private ToolStripMenuItem _miWander;
         private ToolStripMenuItem _miAutoStart;
         private ToolStripMenuItem _miWeather;
+        private ToolStripMenuItem[] _miFxItems;
         private bool _weatherBusy;
         private string _cityCode = "";
         private string _cityName = "";
         private bool _cityLocated;
         private string _lastWeatherDay = "";
         private readonly object _weatherLock = new object();
+        private string _fxOverride = "";
         private string _weatherFx = "";
         private string _weatherParticle = "";
         private Bitmap _hotOverlay;
@@ -1118,6 +1120,18 @@ namespace DesktopPet
             _miWeather.Enabled = false;
             _menu.Items.Add(_miWeather);
 
+            ToolStripMenuItem miFx = new ToolStripMenuItem("天气效果预览");
+            string[] fxKeys = new string[] { "", "rain", "snow", "hot", "cold" };
+            string[] fxLabels = new string[] { "跟随天气（自动）", "雨丝", "雪花", "红温", "结冰" };
+            _miFxItems = new ToolStripMenuItem[fxKeys.Length];
+            for (int i = 0; i < fxKeys.Length; i++)
+            {
+                string k = fxKeys[i];
+                _miFxItems[i] = new ToolStripMenuItem(fxLabels[i], null, delegate { ApplyFxOverride(k); });
+                miFx.DropDownItems.Add(_miFxItems[i]);
+            }
+            _menu.Items.Add(miFx);
+
             ToolStripMenuItem miPomo = new ToolStripMenuItem("番茄钟");
             miPomo.DropDownItems.Add("开始 25 分钟专注", null, delegate { StartPomodoro(); });
             miPomo.DropDownItems.Add("开始 5 分钟休息", null, delegate { StartRest(); });
@@ -1306,6 +1320,14 @@ namespace DesktopPet
             UpdateSizeChecks();
             if (_miWeather != null)
                 _miWeather.Text = _cityName.Length > 0 ? "天气城市：" + _cityName : "天气：未设置城市";
+            if (_miFxItems != null)
+            {
+                for (int i = 0; i < _miFxItems.Length; i++)
+                {
+                    string k = (i == 0) ? "" : new string[] { "rain", "snow", "hot", "cold" }[i - 1];
+                    _miFxItems[i].Checked = (_fxOverride == k);
+                }
+            }
             if (_miMood != null) _miMood.Text = "心情：" + MoodLabel();
             if (_miWander != null) _miWander.Checked = _wanderEnabled;
             if (_miAutoStart != null) _miAutoStart.Checked = IsAutoStartEnabled();
@@ -1460,13 +1482,13 @@ namespace DesktopPet
                 string page = HttpGetUtf8("http://d1.weather.com.cn/weather_index/" + code + ".html", "http://www.weather.com.cn/");
                 WeatherInfo wi = ParseWeather(page, name);
                 msg = wi.Text;
-                string fx = DecideWeatherFx(wi);
+                string fx = ResolveWeatherFx(wi);
                 if (fx != _weatherFx)
                 {
                     _weatherFx = fx;
                     EnsureWeatherOverlays();
                 }
-                _weatherParticle = DecideWeatherParticle(wi);
+                _weatherParticle = ResolveWeatherParticle(wi);
                 _cityCode = code;
                 _cityName = name;
                 SaveSettings();
@@ -1573,6 +1595,41 @@ namespace DesktopPet
             if (wi.TempNow >= 33 || wi.TempHigh >= 34) return "hot";
             if (wi.TempNow <= 2 || (wi.TempLow > -9000 && wi.TempLow <= 0)) return "cold";
             return "";
+        }
+
+        private string ResolveWeatherFx(WeatherInfo wi)
+        {
+            if (_fxOverride == "hot" || _fxOverride == "cold") return _fxOverride;
+            if (_fxOverride == "rain" || _fxOverride == "snow") return "";
+            return DecideWeatherFx(wi);
+        }
+
+        private string ResolveWeatherParticle(WeatherInfo wi)
+        {
+            if (_fxOverride.Length > 0) return _fxOverride;
+            return DecideWeatherParticle(wi);
+        }
+
+        private void ApplyFxOverride(string k)
+        {
+            _fxOverride = k;
+            if (k.Length == 0)
+            {
+                QueryWeather(false); // 恢复自动：重新查询以应用真实天气效果
+                return;
+            }
+            if (k == "hot" || k == "cold")
+            {
+                _weatherFx = k;
+                EnsureWeatherOverlays();
+            }
+            else
+            {
+                _weatherFx = "";
+            }
+            _weatherParticle = k;
+            string label = (k == "rain") ? "雨丝" : (k == "snow") ? "雪花" : (k == "hot") ? "红温" : "结冰";
+            SafeBubble("天气效果预览：" + label);
         }
 
         private void EnsureWeatherOverlays()
