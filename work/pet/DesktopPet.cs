@@ -1704,23 +1704,23 @@ namespace DesktopPet
             string ws = Regex.Match(sk, "\"WS\":\"([^\"]+)\"").Groups[1].Value;
             string sd = Regex.Match(sk, "\"SD\":\"([^\"]+)\"").Groups[1].Value;
             string rw = Regex.Match(sk, "\"weather\":\"([^\"]+)\"").Groups[1].Value;
-            if (string.IsNullOrEmpty(weather)) weather = rw;
-            if (string.IsNullOrEmpty(weather)) weather = "天气数据获取中";
+            if (string.IsNullOrEmpty(rw)) rw = weather;
+            if (string.IsNullOrEmpty(rw)) rw = "天气数据获取中";
 
-            wi.Weather = weather;
+            // 实时天气现象优先（d1 的"今日预报"字段 temp/weather 经常滞后不准）
+            wi.Weather = rw;
             wi.TempHigh = ParseIntTemp(tHigh);
             wi.TempLow = ParseIntTemp(tLow);
             wi.TempNow = ParseIntTemp(rt);
 
             string line1 = "主人～今日天气播报！";
-            string line2 = name + "：" + weather;
+            string line2 = name + "：" + rw;
+            if (wi.TempNow > -9000) line2 += " 实时" + wi.TempNow + "℃";
             string line3 = "";
             if (wi.TempHigh > -9000)
-                line3 = "气温 " + wi.TempLow + "℃~" + wi.TempHigh + "℃";
+                line3 = "预报 " + wi.TempLow + "℃~" + wi.TempHigh + "℃";
             else if (wi.TempLow > -9000)
                 line3 = "气温约 " + wi.TempLow + "℃";
-            if (wi.TempNow > -9000)
-                line3 = line3.Length > 0 ? line3 + "　实时" + wi.TempNow + "℃" : "实时温度 " + wi.TempNow + "℃";
             string line4 = "";
             if (!string.IsNullOrEmpty(wd) || !string.IsNullOrEmpty(ws))
                 line4 = (wd + " " + ws).Trim();
