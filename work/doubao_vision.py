@@ -23,7 +23,7 @@ import urllib.request
 import urllib.error
 
 API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
-DEFAULT_MODEL = "doubao-1.5-vision-pro-32k-250115"
+DEFAULT_MODEL = "doubao-seed-2-0-lite-260215"  # 若提示 ModelNotOpen，需在方舟控制台开通该模型
 MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4MB 以上自动压缩
 MAX_DIM = 2048
 
