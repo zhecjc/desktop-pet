@@ -13,6 +13,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
+using Windows.Devices.Geolocation;
 
 namespace DesktopPet
 {
@@ -2031,9 +2032,23 @@ namespace DesktopPet
         {
             code = "";
             name = "";
+            // 本地定位优先：Windows 位置服务（WiFi / GPS / 基站，精度街道级）
+            double lat, lon;
+            if (TryLocalLocation(out lat, out lon))
+            {
+                name = CityFromLatLon(lat, lon);
+                if (!string.IsNullOrEmpty(name))
+                {
+                    code = CityNameToCode(name);
+                    if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+                    if (!string.IsNullOrEmpty(code)) return;
+                }
+            }
+            // IP 定位兜底（本地定位不可用 / 权限未开 / 定位不到城市时）
             string city = "";
             try
             {
+                // 源1：搜狐（返回形如"广东省广州市"，国内快）
                 string s = HttpGetUtf8("http://pv.sohu.com/cityjson", null);
                 Match m = Regex.Match(s, "\"cname\"\\s*:\\s*\"([^\"]+)\"");
                 if (m.Success)
@@ -2047,9 +2062,19 @@ namespace DesktopPet
             {
                 try
                 {
-                    string j = HttpGetUtf8("http://ip-api.com/json/?lang=zh-CN&fields=status,city", null);
-                    Match m = Regex.Match(j, "\"city\"\\s*:\\s*\"([^\"]+)\"");
-                    if (m.Success && j.Contains("\"status\":\"success\"")) city = m.Groups[1].Value;
+                    // 源2：ip-api.com（返回 city 市级 / regionName 省级）
+                    string j = HttpGetUtf8("http://ip-api.com/json/?lang=zh-CN&fields=status,city,regionName", null);
+                    if (j.Contains("\"status\":\"success\""))
+                    {
+                        Match mc = Regex.Match(j, "\"city\"\\s*:\\s*\"([^\"]+)\"");
+                        if (mc.Success) city = mc.Groups[1].Value;
+                        else
+                        {
+                            // 只定位到省级时，用省名（NormalizeCity 会映射成省会）
+                            Match mr = Regex.Match(j, "\"regionName\"\\s*:\\s*\"([^\"]+)\"");
+                            if (mr.Success) city = mr.Groups[1].Value;
+                        }
+                    }
                 }
                 catch { }
             }
@@ -2059,15 +2084,130 @@ namespace DesktopPet
             if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
         }
 
+        // 本地定位：调用 Windows 位置服务（WinRT Geolocator）拿经纬度。
+        // 位置权限未开启时返回 false 并提示一次；超时 / 无定位信号也返回 false，由上层回退 IP 定位。
+        private bool TryLocalLocation(out double lat, out double lon)
+        {
+            lat = 0;
+            lon = 0;
+            try
+            {
+                Geolocator g = new Geolocator();
+                g.DesiredAccuracy = PositionAccuracy.High;
+                Windows.Foundation.IAsyncOperation<Geoposition> op = g.GetGeopositionAsync(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+                var task = op.AsTask();
+                if (!task.Wait(12000)) return false;
+                Geoposition pos = op.GetResults();
+                if (pos == null || pos.Coordinate == null) return false;
+                lat = pos.Coordinate.Point.Position.Latitude;
+                lon = pos.Coordinate.Point.Position.Longitude;
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                SafeBubble("想用电脑本地定位（更准），请先在 Windows 设置中开启位置权限～\n现在用 IP 定位代替。");
+                return false;
+            }
+            catch { return false; }
+        }
+
+        // 经纬度 -> 最近城市（Haversine 距离，内置城市经纬度表，完全本地计算）
+        private const double EarthRadiusKm = 6371.0;
+
+        private static string CityFromLatLon(double lat, double lon)
+        {
+            if (CityLocs.Count == 0) return "";
+            string best = "";
+            double bestDist = double.MaxValue;
+            double latR = lat * Math.PI / 180.0;
+            foreach (KeyValuePair<string, double[]> kv in CityLocs)
+            {
+                double clat = kv.Value[0] * Math.PI / 180.0;
+                double dLat = latR - clat;
+                double dLon = (lon - kv.Value[1]) * Math.PI / 180.0;
+                double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                           Math.Cos(latR) * Math.Cos(clat) * Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+                double dist = EarthRadiusKm * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+                if (dist < bestDist) { bestDist = dist; best = kv.Key; }
+            }
+            // 最近城市超过 500km（定位在国外或明显异常）时返回空，让上层走 IP 兜底
+            return bestDist <= 500 ? best : "";
+        }
+
+        // 省级名称 -> 省会城市（仅当 IP 定位只返回省级时兜底，避免"吉林省"被当成"吉林市"）
+        private static readonly Dictionary<string, string> ProvinceCapitals = new Dictionary<string, string>()
+        {
+            { "河北", "石家庄" }, { "山西", "太原" }, { "辽宁", "沈阳" }, { "吉林", "长春" },
+            { "黑龙江", "哈尔滨" }, { "江苏", "南京" }, { "浙江", "杭州" }, { "安徽", "合肥" },
+            { "福建", "福州" }, { "江西", "南昌" }, { "山东", "济南" }, { "河南", "郑州" },
+            { "湖北", "武汉" }, { "湖南", "长沙" }, { "广东", "广州" }, { "海南", "海口" },
+            { "四川", "成都" }, { "贵州", "贵阳" }, { "云南", "昆明" }, { "陕西", "西安" },
+            { "甘肃", "兰州" }, { "青海", "西宁" }, { "内蒙古", "呼和浩特" }, { "广西", "南宁" },
+            { "西藏", "拉萨" }, { "宁夏", "银川" }, { "新疆", "乌鲁木齐" }, { "台湾", "台北" },
+            { "香港", "香港" }, { "澳门", "澳门" },
+        };
+
         private static string NormalizeCity(string city)
         {
-            string s = city;
-            string[] suf = { "特别行政区", "维吾尔自治区", "壮族自治区", "回族自治区", "自治区", "自治州", "自治县", "地区", "省", "市", "盟", "县" };
-            foreach (string t in suf)
+            if (string.IsNullOrEmpty(city)) return "";
+            string s = city.Trim();
+            // 原始串里是否带"市"：带则说明定位到了市级，省名不该再映射成省会
+            // （如"吉林省吉林市"应保留"吉林"，只有"吉林省"才映射"长春"）
+            bool hadCity = s.Contains("市");
+            string province = "";
+            // 1) 先拆出省级部分（省 / 自治区 / 自治州 / 自治县），剩下的应是市名
+            string[] provSuf = { "维吾尔自治区", "壮族自治区", "回族自治区", "自治区", "自治州", "自治县", "省" };
+            foreach (string t in provSuf)
             {
-                if (s.EndsWith(t)) { s = s.Substring(0, s.Length - t.Length); break; }
+                int idx = s.IndexOf(t);
+                if (idx >= 0)
+                {
+                    province = s.Substring(0, idx + t.Length);
+                    s = s.Substring(idx + t.Length);
+                    break;
+                }
             }
-            return s.Trim();
+            // 2) 循环去掉市级 / 县级后缀
+            string[] suf = { "特别行政区", "市", "盟", "县", "地区" };
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                foreach (string t in suf)
+                {
+                    if (s.EndsWith(t))
+                    {
+                        s = s.Substring(0, s.Length - t.Length);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            s = s.Trim();
+            // 3) 只剩省名（如"广东省"）→ 映射省会
+            if (s.Length == 0)
+            {
+                foreach (KeyValuePair<string, string> kv in ProvinceCapitals)
+                {
+                    if (province.StartsWith(kv.Key)) return kv.Value;
+                }
+                return "";
+            }
+            // 4) 无后缀直接拼接的"四川成都"这类，剥掉省名
+            if (!hadCity)
+            {
+                foreach (KeyValuePair<string, string> kv in ProvinceCapitals)
+                {
+                    if (s.StartsWith(kv.Key) && s.Length > kv.Key.Length)
+                    {
+                        s = s.Substring(kv.Key.Length).Trim();
+                        break;
+                    }
+                }
+            }
+            // 5) 纯省名（如 ip-api 的 regionName"吉林"）→ 映射省会
+            if (!hadCity && ProvinceCapitals.ContainsKey(s)) return ProvinceCapitals[s];
+            return s;
         }
 
         private static readonly Dictionary<string, string> CityCodes = new Dictionary<string, string>()
@@ -2091,6 +2231,52 @@ namespace DesktopPet
             { "邯郸", "101091001" }, { "吉林", "101060201" }, { "大庆", "101050901" }, { "绵阳", "101270401" },
             { "乐山", "101271401" }, { "宜宾", "101271101" }, { "桂林", "101300501" }, { "柳州", "101300301" },
             { "三亚", "101310201" }, { "遵义", "101260201" }, { "咸阳", "101110200" }, { "宝鸡", "101110901" },
+        };
+
+        // 城市经纬度表（WGS-84 近似值）：本地定位拿到经纬度后找最近城市
+        private static readonly Dictionary<string, double[]> CityLocs = new Dictionary<string, double[]>()
+        {
+            // 直辖市
+            { "北京", new double[] { 39.9042, 116.4074 } }, { "上海", new double[] { 31.2304, 121.4737 } },
+            { "天津", new double[] { 39.3434, 117.3616 } }, { "重庆", new double[] { 29.5630, 106.5516 } },
+            // 省会
+            { "哈尔滨", new double[] { 45.8038, 126.5349 } }, { "长春", new double[] { 43.8171, 125.3235 } },
+            { "沈阳", new double[] { 41.8057, 123.4315 } }, { "呼和浩特", new double[] { 40.8424, 111.7490 } },
+            { "石家庄", new double[] { 38.0428, 114.5149 } }, { "太原", new double[] { 37.8706, 112.5489 } },
+            { "西安", new double[] { 34.3416, 108.9398 } }, { "济南", new double[] { 36.6512, 117.1201 } },
+            { "乌鲁木齐", new double[] { 43.8256, 87.6168 } }, { "拉萨", new double[] { 29.6520, 91.1721 } },
+            { "西宁", new double[] { 36.6171, 101.7782 } }, { "兰州", new double[] { 36.0611, 103.8343 } },
+            { "银川", new double[] { 38.4872, 106.2309 } }, { "郑州", new double[] { 34.7466, 113.6254 } },
+            { "南京", new double[] { 32.0603, 118.7969 } }, { "武汉", new double[] { 30.5928, 114.3055 } },
+            { "杭州", new double[] { 30.2741, 120.1551 } }, { "合肥", new double[] { 31.8206, 117.2272 } },
+            { "福州", new double[] { 26.0745, 119.2965 } }, { "南昌", new double[] { 28.6820, 115.8579 } },
+            { "长沙", new double[] { 28.2282, 112.9388 } }, { "贵阳", new double[] { 26.6470, 106.6302 } },
+            { "成都", new double[] { 30.5728, 104.0668 } }, { "广州", new double[] { 23.1291, 113.2644 } },
+            { "昆明", new double[] { 24.8801, 102.8329 } }, { "南宁", new double[] { 22.8170, 108.3665 } },
+            { "海口", new double[] { 20.0440, 110.1999 } },
+            { "香港", new double[] { 22.3193, 114.1694 } }, { "澳门", new double[] { 22.1987, 113.5439 } },
+            { "台北", new double[] { 25.0330, 121.5654 } },
+            // 主要地级市
+            { "深圳", new double[] { 22.5431, 114.0579 } }, { "珠海", new double[] { 22.2707, 113.5767 } },
+            { "佛山", new double[] { 23.0218, 113.1219 } }, { "东莞", new double[] { 23.0207, 113.7518 } },
+            { "中山", new double[] { 22.5176, 113.3928 } }, { "惠州", new double[] { 23.1115, 114.4158 } },
+            { "汕头", new double[] { 23.3535, 116.6822 } }, { "湛江", new double[] { 21.2707, 110.3594 } },
+            { "江门", new double[] { 22.5786, 113.0816 } }, { "肇庆", new double[] { 23.0468, 112.4723 } },
+            { "青岛", new double[] { 36.0671, 120.3826 } }, { "大连", new double[] { 38.9140, 121.6147 } },
+            { "厦门", new double[] { 24.4798, 118.0894 } }, { "苏州", new double[] { 31.2989, 120.5853 } },
+            { "宁波", new double[] { 29.8683, 121.5440 } }, { "无锡", new double[] { 31.4912, 120.3119 } },
+            { "温州", new double[] { 27.9938, 120.6994 } }, { "泉州", new double[] { 24.8741, 118.6757 } },
+            { "烟台", new double[] { 37.4638, 121.4479 } }, { "徐州", new double[] { 34.2058, 117.2841 } },
+            { "常州", new double[] { 31.8107, 119.9741 } }, { "南通", new double[] { 31.9802, 120.8943 } },
+            { "洛阳", new double[] { 34.6197, 112.4540 } }, { "开封", new double[] { 34.7971, 114.3074 } },
+            { "保定", new double[] { 38.8740, 115.4646 } }, { "唐山", new double[] { 39.6305, 118.1802 } },
+            { "廊坊", new double[] { 39.5378, 116.6837 } }, { "秦皇岛", new double[] { 39.9355, 119.5997 } },
+            { "邯郸", new double[] { 36.6256, 114.5391 } }, { "吉林", new double[] { 43.8378, 126.5496 } },
+            { "大庆", new double[] { 46.5893, 125.1039 } }, { "绵阳", new double[] { 31.4675, 104.6796 } },
+            { "乐山", new double[] { 29.5521, 103.7657 } }, { "宜宾", new double[] { 28.7513, 104.6417 } },
+            { "桂林", new double[] { 25.2736, 110.2900 } }, { "柳州", new double[] { 24.3264, 109.4282 } },
+            { "三亚", new double[] { 18.2528, 109.5119 } }, { "遵义", new double[] { 27.7254, 106.9273 } },
+            { "咸阳", new double[] { 34.3294, 108.7089 } }, { "宝鸡", new double[] { 34.3619, 107.2373 } },
         };
 
         private static string CityNameToCode(string name)

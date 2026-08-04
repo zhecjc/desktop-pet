@@ -6,7 +6,7 @@
 
 - **互动动画**：单击角色触发随机互动（跳跃 / 压扁回弹 / 左右抖动 / 摆姿势 / 点头 / 卖萌），平时有呼吸起伏、打哈欠、伸懒腰、东张西望、打瞌睡
 - **表情特效**：互动时显示爱心、音符、汗滴、星星、Zzz、感叹号
-- **天气播报**：IP 自动定位城市，启动时与每天 8 点后自动播报一次，之后每 30 分钟静默刷新温度与天气效果，不弹气泡打扰
+- **天气播报**：优先用 Windows 本地定位（WiFi / GPS，精度街道级），拿不到时自动回退 IP 定位城市；启动时与每天 8 点后自动播报一次，之后每 30 分钟静默刷新温度与天气效果，不弹气泡打扰
 - **天气视觉特效**：下雨飘雨丝、下雪飘雪花；天气炎热（≥33℃）红温冒热气、寒冷（≤2℃）结冰挂冰晶，效果跟随角色动作动态贴合
 - **天气效果预览**：可手动切换查看雨丝 / 雪花 / 红温 / 结冰效果，不依赖真实天气，随时恢复自动
 - **番茄钟**：25 分钟专注 / 5 分钟休息，专注结束提醒起身活动，并自动进入休息计时
@@ -48,6 +48,7 @@ outputs/桌面宠物/桌宠.exe
 └── work/                    # 开发目录
     ├── pet/
     │   ├── DesktopPet.cs     # 主程序（C# / WinForms，单文件）
+    │   ├── winrt/            # WinRT 元数据（编译期引用，用于 Windows 本地定位）
     │   ├── DesktopPet_v2.cs  # 历史版本
     │   ├── DesktopPet_v2b.cs
     │   └── …                 # 图像处理 / 测试 / 补丁脚本、测试帧
@@ -57,7 +58,12 @@ outputs/桌面宠物/桌宠.exe
 ## 技术说明
 
 - **主程序**：C# / .NET WinForms，透明无边框置顶窗口（`UpdateLayeredWindow`），单文件编译并内嵌图标
-- **天气数据**：中国天气网，IP 自动定位城市；定位不准或失败时可手动设置城市名或城市代码（如 `101280101`）
+- **天气数据**：中国天气网；城市定位分两级——先调 Windows 位置服务（`Windows.Devices.Geolocation`，WiFi/GPS 三角定位）拿经纬度，再按内置城市经纬度表算最近城市（本地完成）；本地定位不可用（权限未开 / 无信号 / 超时）时自动回退 IP 定位（搜狐 → ip-api.com）；仍失败可手动设置城市名或城市代码（如 `101280101`）
+- **编译命令**（需 .NET Framework 4.x 的 csc，输出 `test_pet.exe`）：
+  ```
+  csc /nologo /target:winexe /out:test_pet.exe /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xml.dll /r:System.Web.dll /r:System.Runtime.dll /r:netstandard.dll /r:System.Runtime.WindowsRuntime.dll /r:winrt/windows.winmd /r:winrt/Windows.Foundation.FoundationContract.winmd /r:winrt/Windows.Foundation.UniversalApiContract.winmd DesktopPet.cs
+  ```
+  （在 `work/pet` 目录下执行；`winrt/` 下的 winmd 仅编译期需要，发布 exe 运行时不依赖）
 
 ## 常见问题
 
