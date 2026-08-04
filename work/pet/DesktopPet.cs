@@ -256,6 +256,12 @@ namespace DesktopPet
         private string _cityCode = "";
         private string _cityName = "";
         private bool _cityLocated;
+        // 定位诊断（供"定位信息"菜单与日志）
+        private string _locateDiag = "";
+        private double _locateLat = 0;
+        private double _locateLon = 0;
+        private bool _locateLocalOk = false;
+        private bool _locatePermissionNotified = false;
         private string _lastWeatherDay = "";
         private DateTime _nextWeatherRefresh;
         private readonly object _weatherLock = new object();
@@ -1273,6 +1279,7 @@ namespace DesktopPet
             _miWeather = new ToolStripMenuItem("天气：未设置城市");
             _miWeather.Enabled = false;
             _menu.Items.Add(_miWeather);
+            _menu.Items.Add("定位信息", null, delegate { ShowLocateInfo(); });
 
             ToolStripMenuItem miFx = new ToolStripMenuItem("天气效果预览");
             string[] fxKeys = new string[] { "", "rain", "snow", "hot", "cold" };
@@ -2032,24 +2039,69 @@ namespace DesktopPet
         {
             code = "";
             name = "";
-            // 本地定位优先：Windows 位置服务（WiFi / GPS / 基站，精度街道级）
-            double lat, lon;
-            if (TryLocalLocation(out lat, out lon))
+            StringBuilder diag = new StringBuilder();
+            diag.AppendLine("== 定位过程 ==");
+
+            // 1) 本地定位优先：Windows 位置服务（WiFi / GPS / 基站，精度街道级）
+            string localFail = "";
+            _locateLocalOk = TryLocalLocation(out _locateLat, out _locateLon, out localFail);
+            if (_locateLocalOk)
             {
-                name = CityFromLatLon(lat, lon);
+                diag.AppendLine(string.Format(CultureInfo.InvariantCulture, "本地定位: 成功 ({0:F5}, {1:F5})", _locateLat, _locateLon));
+                name = CityFromLatLon(_locateLat, _locateLon);
                 if (!string.IsNullOrEmpty(name))
                 {
+                    diag.AppendLine("本地逆地理最近城市: " + name);
                     code = CityNameToCode(name);
                     if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
-                    if (!string.IsNullOrEmpty(code)) return;
+                    if (!string.IsNullOrEmpty(code))
+                    {
+                        diag.AppendLine("城市码: " + code);
+                        FinishLocate(diag);
+                        return;
+                    }
+                    diag.AppendLine("城市码查找失败");
+                }
+                else diag.AppendLine("本地逆地理: 最近城市超过 500km，忽略");
+            }
+            else
+            {
+                diag.AppendLine("本地定位: 失败 - " + localFail);
+                if (localFail.IndexOf("权限", StringComparison.Ordinal) >= 0 && !_locatePermissionNotified)
+                {
+                    _locatePermissionNotified = true;
+                    SafeBubble("想用电脑本地定位（更准），请开启位置权限：\nWindows 设置 → 隐私 → 位置 → 允许应用访问位置\n开启后重启桌宠生效，现在先用 IP 定位代替。");
                 }
             }
-            // IP 定位兜底（本地定位不可用 / 权限未开 / 定位不到城市时）
+
+            // 2) IP 兜底：ipip.net（国内专业库，对移动/联通 IP 精度高）→ 搜狐 → ip-api（坐标逆地理优先 → 文本兜底）
             string city = "";
             try
             {
-                // 源1：搜狐（返回形如"广东省广州市"，国内快）
+                string t = HttpGetUtf8("http://myip.ipip.net", null);
+                diag.AppendLine("ipip.net 返回: " + t.Trim());
+                city = ParseIpipCity(t);
+                if (!string.IsNullOrEmpty(city)) diag.AppendLine("ipip.net 解析城市: " + city);
+            }
+            catch (Exception ex) { diag.AppendLine("ipip.net 请求异常: " + ex.Message); }
+            if (!string.IsNullOrEmpty(city))
+            {
+                name = NormalizeCity(city);
+                code = CityNameToCode(name);
+                if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+                if (!string.IsNullOrEmpty(code))
+                {
+                    diag.AppendLine("IP定位(ipip.net): " + city + " → " + name + " (" + code + ")");
+                    FinishLocate(diag);
+                    return;
+                }
+                diag.AppendLine("ipip.net 城市解析失败: " + city + " → " + name);
+            }
+
+            try
+            {
                 string s = HttpGetUtf8("http://pv.sohu.com/cityjson", null);
+                diag.AppendLine("搜狐返回: " + s.Trim());
                 Match m = Regex.Match(s, "\"cname\"\\s*:\\s*\"([^\"]+)\"");
                 if (m.Success)
                 {
@@ -2057,36 +2109,98 @@ namespace DesktopPet
                     if (city == "未知" || city.Length < 2) city = "";
                 }
             }
-            catch { }
-            if (string.IsNullOrEmpty(city))
+            catch (Exception ex) { diag.AppendLine("搜狐请求异常: " + ex.Message); }
+            if (!string.IsNullOrEmpty(city))
             {
-                try
+                name = NormalizeCity(city);
+                code = CityNameToCode(name);
+                if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+                if (!string.IsNullOrEmpty(code))
                 {
-                    // 源2：ip-api.com（返回 city 市级 / regionName 省级）
-                    string j = HttpGetUtf8("http://ip-api.com/json/?lang=zh-CN&fields=status,city,regionName", null);
-                    if (j.Contains("\"status\":\"success\""))
+                    diag.AppendLine("IP定位(搜狐): " + city + " → " + name + " (" + code + ")");
+                    FinishLocate(diag);
+                    return;
+                }
+                diag.AppendLine("搜狐城市解析失败: " + city + " → " + name);
+            }
+
+            // ip-api：坐标逆地理优先（比 city 文本更可信），失败再用文本
+            try
+            {
+                string j = HttpGetUtf8("http://ip-api.com/json/?lang=zh-CN&fields=status,city,regionName,lat,lon", null);
+                diag.AppendLine("ip-api 返回: " + j.Trim());
+                if (j.Contains("\"status\":\"success\""))
+                {
+                    double ilat = 0, ilon = 0;
+                    Match mlat = Regex.Match(j, "\"lat\"\\s*:\\s*([-0-9.]+)");
+                    Match mlon = Regex.Match(j, "\"lon\"\\s*:\\s*([-0-9.]+)");
+                    if (mlat.Success && mlon.Success &&
+                        double.TryParse(mlat.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out ilat) &&
+                        double.TryParse(mlon.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out ilon))
                     {
-                        Match mc = Regex.Match(j, "\"city\"\\s*:\\s*\"([^\"]+)\"");
-                        if (mc.Success) city = mc.Groups[1].Value;
-                        else
+                        string coordCity = CityFromLatLon(ilat, ilon);
+                        diag.AppendLine(string.Format(CultureInfo.InvariantCulture, "ip-api 坐标 ({0:F3},{1:F3}) 逆地理: {2}", ilat, ilon, coordCity.Length > 0 ? coordCity : "(无匹配)"));
+                        if (!string.IsNullOrEmpty(coordCity))
                         {
-                            // 只定位到省级时，用省名（NormalizeCity 会映射成省会）
-                            Match mr = Regex.Match(j, "\"regionName\"\\s*:\\s*\"([^\"]+)\"");
-                            if (mr.Success) city = mr.Groups[1].Value;
+                            name = coordCity;
+                            code = CityNameToCode(name);
+                            if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+                            if (!string.IsNullOrEmpty(code))
+                            {
+                                diag.AppendLine("IP定位(ip-api 坐标): " + name + " (" + code + ")");
+                                FinishLocate(diag);
+                                return;
+                            }
                         }
                     }
+                    // 文本兜底
+                    Match mc = Regex.Match(j, "\"city\"\\s*:\\s*\"([^\"]+)\"");
+                    if (mc.Success) city = mc.Groups[1].Value;
+                    else
+                    {
+                        Match mr = Regex.Match(j, "\"regionName\"\\s*:\\s*\"([^\"]+)\"");
+                        if (mr.Success) city = mr.Groups[1].Value;
+                    }
                 }
-                catch { }
             }
-            if (string.IsNullOrEmpty(city)) return;
-            name = NormalizeCity(city);
-            code = CityNameToCode(name);
-            if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+            catch (Exception ex) { diag.AppendLine("ip-api 请求异常: " + ex.Message); }
+            if (!string.IsNullOrEmpty(city))
+            {
+                name = NormalizeCity(city);
+                code = CityNameToCode(name);
+                if (string.IsNullOrEmpty(code)) code = CityCodeSearch(name);
+                diag.AppendLine("IP定位(ip-api 文本): " + city + " → " + name + " (" + code + ")");
+            }
+            else
+            {
+                diag.AppendLine("所有定位源均失败");
+                name = "";
+                code = "";
+            }
+            FinishLocate(diag);
+        }
+
+        private void FinishLocate(StringBuilder diag)
+        {
+            _locateDiag = diag.ToString();
+            AppendLocateLog(_locateDiag);
+        }
+
+        private void AppendLocateLog(string text)
+        {
+            try
+            {
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DesktopPet");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "locate.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\n" + text + "\n\n", Encoding.UTF8);
+            }
+            catch { }
         }
 
         // 本地定位：调用 Windows 位置服务（WinRT Geolocator）拿经纬度。
-        // 位置权限未开启时返回 false 并提示一次；超时 / 无定位信号也返回 false，由上层回退 IP 定位。
-        private bool TryLocalLocation(out double lat, out double lon)
+        // 失败时通过 failReason 说明原因（权限 / 超时 / 无信号 / 异常），由上层回退 IP 定位。
+        private bool TryLocalLocation(out double lat, out double lon, out string failReason)
         {
             lat = 0;
             lon = 0;
@@ -2094,21 +2208,52 @@ namespace DesktopPet
             {
                 Geolocator g = new Geolocator();
                 g.DesiredAccuracy = PositionAccuracy.High;
-                Windows.Foundation.IAsyncOperation<Geoposition> op = g.GetGeopositionAsync(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+                Windows.Foundation.IAsyncOperation<Geoposition> op = g.GetGeopositionAsync(TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(5));
                 var task = op.AsTask();
-                if (!task.Wait(12000)) return false;
+                if (!task.Wait(30000))
+                {
+                    failReason = "定位超时（30 秒无结果）";
+                    return false;
+                }
+                if (op.Status != Windows.Foundation.AsyncStatus.Completed)
+                {
+                    failReason = "定位失败（状态 " + op.Status + "）";
+                    return false;
+                }
                 Geoposition pos = op.GetResults();
-                if (pos == null || pos.Coordinate == null) return false;
+                if (pos == null || pos.Coordinate == null)
+                {
+                    failReason = "无定位结果（无 GPS / WiFi 信号或位置服务未就绪）";
+                    return false;
+                }
                 lat = pos.Coordinate.Point.Position.Latitude;
                 lon = pos.Coordinate.Point.Position.Longitude;
+                failReason = "";
                 return true;
             }
             catch (UnauthorizedAccessException)
             {
-                SafeBubble("想用电脑本地定位（更准），请先在 Windows 设置中开启位置权限～\n现在用 IP 定位代替。");
+                failReason = "位置权限未开启（Windows 设置 → 隐私 → 位置）";
                 return false;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                failReason = "异常: " + ex.Message;
+                return false;
+            }
+        }
+
+        // 右键菜单"定位信息"：重新定位一次并把详细过程显示出来
+        private void ShowLocateInfo()
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string code, name;
+                LocateCity(out code, out name);
+                string msg = "【定位信息】\n" + _locateDiag
+                    + "\n当前天气城市: " + (name.Length > 0 ? name : "未设置（走北京兜底）");
+                SafeBubble(msg);
+            });
         }
 
         // 经纬度 -> 最近城市（Haversine 距离，内置城市经纬度表，完全本地计算）
@@ -2146,6 +2291,20 @@ namespace DesktopPet
             { "西藏", "拉萨" }, { "宁夏", "银川" }, { "新疆", "乌鲁木齐" }, { "台湾", "台北" },
             { "香港", "香港" }, { "澳门", "澳门" },
         };
+
+        // ipip.net 返回文本格式："当前 IP：x.x.x.x  来自于：中国 广东 深圳  移动(AS56040)"
+        // 直辖市格式如"中国 北京 北京"或"中国 上海 电信"
+        private static string ParseIpipCity(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            Match m = Regex.Match(text, "来自于[:：]\\s*中国\\s+([^\\s]+)\\s+([^\\s]+)");
+            if (!m.Success) return "";
+            string a = m.Groups[1].Value; // 省 / 直辖市
+            string b = m.Groups[2].Value; // 市 / 运营商
+            if (a == "北京" || a == "上海" || a == "天津" || a == "重庆") return a;
+            if (b == "移动" || b == "联通" || b == "电信" || b == "铁通") return a;
+            return b;
+        }
 
         private static string NormalizeCity(string city)
         {
