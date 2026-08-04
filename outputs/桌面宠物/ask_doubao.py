@@ -129,8 +129,17 @@ def send_question(driver, question):
         tb = find_input(driver, 10)
         if tb is None:
             log("输入框未找到（尝试 " + str(attempt + 1) + "）")
-            time.sleep(3)
-            continue
+            # 输入框都找不到说明页面已异常，提前判定失败，交给上层重启浏览器
+            return False
+        # 清空输入框残留内容（复用会话时上次失败的问题可能还留在框里）
+        try:
+            tb.click()
+            time.sleep(0.2)
+            tb.send_keys(u"\ue009", "a")  # Ctrl+A
+            tb.send_keys(u"\ue017")       # Delete
+            time.sleep(0.2)
+        except Exception:
+            pass
 
         # 输入：优先 send_keys，校验 value 为空则用 JS 原生 setter
         typed = False
@@ -140,7 +149,7 @@ def send_question(driver, question):
             tb.send_keys(question)
             time.sleep(0.8)
             val = driver.execute_script("return arguments[0].value", tb) or ""
-            if question in val:
+            if val == question:
                 typed = True
         except Exception as e:
             log("send_keys 异常: " + str(e))
@@ -155,11 +164,11 @@ def send_question(driver, question):
                 """, tb, question)
                 time.sleep(0.6)
                 val = driver.execute_script("return arguments[0].value", tb) or ""
-                typed = question in val
+                typed = val == question
             except Exception as e:
                 log("JS 输入异常: " + str(e))
         if not typed:
-            log("输入未生效（尝试 " + str(attempt + 1) + "），页面可能异常，重试")
+            log("输入未生效（尝试 " + str(attempt + 1) + "），页面可能异常")
             time.sleep(3)
             continue
         log("输入成功: " + question[:30])
@@ -221,6 +230,7 @@ def try_extract_answer(full, before, question):
     answer = tail
     # 助手消息自带操作按钮（复制/重新生成/点赞…），其后通常是推荐内容或 UI，直接截断
     for junk in ("复制", "重新生成", "停止生成", "点赞", "踩", "举报",
+                 "AI 生成可能有误", "注意核实",
                  "相关推荐", "相关视频", "相关文章", "猜你想问", "大家都在问", "相关问题", "更多推荐",
                  "以上内容由 AI 生成", "内容由 AI 生成", "展开全部", "点击展开",
                  "资讯：", "快速", "PPT 生成", "图像生成", "帮我写作", "视频生成",
@@ -289,167 +299,171 @@ def main():
     except Exception:
         pass
 
-    # 保活 Edge：无则冷启动，有则复用
-    if not edge_alive():
-        if not os.path.exists(EDGE_EXE):
-            print("ERROR|找不到 Edge")
-            return
-        stop_keepalive_edge()
-        time.sleep(3)
-        log("冷启动 Edge")
-        if not ensure_edge(profile):
-            print("ERROR|Edge 启动失败")
-            return
-    else:
-        log("复用保活 Edge")
-
     from selenium import webdriver
     from selenium.webdriver.edge.options import Options
     from selenium.webdriver.edge.service import Service
 
-    opts = Options()
-    opts.add_experimental_option("debuggerAddress", "127.0.0.1:" + str(DEBUG_PORT))
-    svc = Service(driver_path)
-    driver = None
-    try:
-        driver = webdriver.Edge(service=svc, options=opts)
-        driver.set_window_size(1280, 900)
-        driver.set_page_load_timeout(30)
+    def attempt(cold_start):
+        """执行一次完整问答。cold_start=True 时强制重启 Edge。返回 (状态, 附加信息)。"""
+        driver = None
         try:
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-            })
-        except Exception:
-            pass
+            if cold_start:
+                stop_keepalive_edge()
+                time.sleep(3)
+                log("冷启动 Edge")
+                if not ensure_edge(profile):
+                    return ("ERROR", "Edge 启动失败")
+            elif not edge_alive():
+                # 无保活实例时也先清理旧实例：可能有其他端口的残留 Edge 占着 profile 锁
+                stop_keepalive_edge()
+                time.sleep(3)
+                log("冷启动 Edge（无保活实例）")
+                if not ensure_edge(profile):
+                    return ("ERROR", "Edge 启动失败")
+            else:
+                log("复用保活 Edge")
 
-        # 复用保活会话时若页面还是豆包聊天页则直接使用（保留多轮上下文），否则重载
-        try:
-            cur = driver.current_url or ""
-            on_doubao = ("doubao.com" in cur)
-        except Exception:
-            on_doubao = False
-        if on_doubao and find_input(driver, 6) is not None:
-            log("复用当前豆包会话（多轮上下文）")
-        else:
+            opts = Options()
+            opts.add_experimental_option("debuggerAddress", "127.0.0.1:" + str(DEBUG_PORT))
+            svc = Service(driver_path)
+            driver = webdriver.Edge(service=svc, options=opts)
+            driver.set_window_size(1280, 900)
+            driver.set_page_load_timeout(30)
             try:
-                driver.get(DOUBAO_URL)
+                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                })
             except Exception:
                 pass
-            if find_input(driver, 30) is None:
+
+            # 复用保活会话时若页面还是豆包聊天页则直接使用（保留多轮上下文），否则重载
+            try:
+                cur = driver.current_url or ""
+                on_doubao = ("doubao.com" in cur)
+            except Exception:
+                on_doubao = False
+            if on_doubao and find_input(driver, 6) is not None:
+                log("复用当前豆包会话（多轮上下文）")
+            else:
                 try:
                     driver.get(DOUBAO_URL)
                 except Exception:
                     pass
                 if find_input(driver, 30) is None:
-                    print("ERROR|页面加载超时（网络慢或页面异常）")
-                    return
-        log("页面标题: " + str(driver.title))
+                    try:
+                        driver.get(DOUBAO_URL)
+                    except Exception:
+                        pass
+                    if find_input(driver, 30) is None:
+                        return ("ERROR", "页面加载超时（网络慢或页面异常）")
+            log("页面标题: " + str(driver.title))
 
-        # 登录检测：未登录则把窗口移到可见位置让用户登录（登录后自动隐藏）
-        login_timeout = 180
-        try:
-            login_timeout = max(30, min(600, int(os.environ.get("DOUBAO_LOGIN_TIMEOUT", "180"))))
-        except Exception:
-            pass
-        if need_login(driver):
+            # 登录检测：未登录则把窗口移到可见位置让用户登录（登录后自动隐藏）
+            login_timeout = 180
             try:
-                driver.set_window_position(150, 100)
-                driver.set_window_size(1280, 900)
+                login_timeout = max(30, min(600, int(os.environ.get("DOUBAO_LOGIN_TIMEOUT", "180"))))
             except Exception:
                 pass
-            log("检测到未登录，已显示窗口等待登录（" + str(login_timeout) + " 秒）")
-            deadline = time.time() + login_timeout
-            while time.time() < deadline:
-                if not need_login(driver):
-                    break
-                time.sleep(3)
             if need_login(driver):
-                log("等待登录超时，窗口保留")
-                print("NEED_LOGIN")
-                return
-            log("登录成功")
-            # 登录后重载页面，确保聊天输入组件就绪
+                try:
+                    driver.set_window_position(150, 100)
+                    driver.set_window_size(1280, 900)
+                except Exception:
+                    pass
+                log("检测到未登录，已显示窗口等待登录（" + str(login_timeout) + " 秒）")
+                deadline = time.time() + login_timeout
+                while time.time() < deadline:
+                    if not need_login(driver):
+                        break
+                    time.sleep(3)
+                if need_login(driver):
+                    log("等待登录超时，窗口保留")
+                    return ("NEED_LOGIN", "")
+                log("登录成功")
+                # 登录后重载页面，确保聊天输入组件就绪
+                try:
+                    driver.get(DOUBAO_URL)
+                except Exception:
+                    pass
+                if find_input(driver, 30) is None:
+                    return ("ERROR", "登录后页面加载异常")
+
+            # 隐藏到屏幕外（用户不可见）
             try:
-                driver.get(DOUBAO_URL)
+                driver.set_window_position(-32000, -32000)
             except Exception:
                 pass
-            if find_input(driver, 30) is None:
-                print("ERROR|登录后页面加载异常")
-                return
+            log("豆包窗口已隐藏")
+            time.sleep(3)
 
-        # 隐藏到屏幕外（用户不可见）
-        try:
-            driver.set_window_position(-32000, -32000)
-        except Exception:
-            pass
-        log("豆包窗口已隐藏")
+            # 发送问题（含验证重试）
+            result = send_question(driver, question)
+            if result == "NEED_LOGIN":
+                try:
+                    driver.set_window_position(150, 100)
+                    driver.set_window_size(1280, 900)
+                except Exception:
+                    pass
+                return ("NEED_LOGIN", "")
+            if result is not True:
+                return ("SEND_FAIL", "发送问题失败（页面可能异常）")
 
-        # 等页面 JS 就绪（冷启动时输入框 DOM 出现但 JS 可能未绑定）
-        time.sleep(3)
-
-        # 发送问题（含验证重试）
-        result = send_question(driver, question)
-        if result == "NEED_LOGIN":
-            try:
-                driver.set_window_position(150, 100)
-                driver.set_window_size(1280, 900)
-            except Exception:
-                pass
-            print("NEED_LOGIN")
-            return
-        if result is not True:
-            print("ERROR|发送问题失败（页面可能异常，稍后再试）")
-            return
-
-        before = page_text(driver)
-
-        # 等待回答（最多 120 秒，6 秒无变化视为完成）
-        last = before
-        stable = 0
-        deadline = time.time() + 120
-        wind_risk = False
-        while time.time() < deadline:
-            time.sleep(0.5)
-            cur = page_text(driver)
-            if not cur:
-                continue
-            if "检测到自动化" in cur or "自动化软件" in cur:
-                log("页面出现风控提示")
-                wind_risk = True
-                break
-            if cur != last:
-                last = cur
-                stable = 0
-            else:
-                stable += 1
-                if stable >= 12:
+            before = page_text(driver)
+            last = before
+            stable = 0
+            deadline = time.time() + 120
+            wind_risk = False
+            while time.time() < deadline:
+                time.sleep(0.5)
+                cur = page_text(driver)
+                if not cur:
+                    continue
+                if "检测到自动化" in cur or "自动化软件" in cur:
+                    log("页面出现风控提示")
+                    wind_risk = True
                     break
-        if wind_risk:
-            print("ERROR|豆包检测到自动化操作，本次未回答（偶发风控，稍后再试）")
-            return
-        if stable < 12:
-            log("等待回答提前结束（可能风控或页面异常）")
-            print("ERROR|豆包未完成回答（可能被风控，稍后再试）")
-            return
+                if cur != last:
+                    last = cur
+                    stable = 0
+                else:
+                    stable += 1
+                    if stable >= 12:
+                        break
+            if wind_risk:
+                return ("ERROR", "豆包检测到自动化操作，本次未回答（偶发风控，稍后再试）")
+            if stable < 12:
+                log("等待回答提前结束（可能风控或页面异常）")
+                return ("ERROR", "豆包未完成回答（可能被风控，稍后再试）")
 
-        answer = try_extract_answer(last, before, question)
-        if len(answer) < 5:
-            print("ERROR|未获取到回答（可能被风控或页面异常）")
-            return
-        try:
-            with open(answer_file, "w", encoding="utf-8") as f:
-                f.write(answer)
+            answer = try_extract_answer(last, before, question)
+            if len(answer) < 5:
+                return ("NO_ANSWER", "未获取到回答（可能被风控或页面异常）")
+            try:
+                with open(answer_file, "w", encoding="utf-8") as f:
+                    f.write(answer)
+            except Exception as e:
+                return ("ERROR", "写入回答失败: " + str(e))
+            log("回答长度: " + str(len(answer)))
+            return ("ANSWER", answer_file)
         except Exception as e:
-            print("ERROR|写入回答失败: " + str(e))
-            return
-        log("回答长度: " + str(len(answer)))
-        print("ANSWER|" + answer_file)
-    except Exception as e:
-        log("异常: " + str(e))
-        print("ERROR|" + str(e)[:150])
-    finally:
-        # 不调用 driver.quit()：避免关闭 Edge（保留可复用）；msedgedriver 由下次运行清理
-        pass
+            log("异常: " + str(e))
+            return ("ERROR", str(e)[:150])
+        finally:
+            # 不调用 driver.quit()：保留保活 Edge 供复用；msedgedriver 由下次运行清理
+            pass
+
+    # 第一次：优先复用保活会话（多轮上下文、更快）
+    status, info = attempt(cold_start=False)
+    # 发送失败/页面异常：重启浏览器再试一次（自愈退化会话）
+    if status in ("SEND_FAIL", "NO_ANSWER", "ERROR"):
+        log("首次尝试失败（" + status + "），重启浏览器重试")
+        status, info = attempt(cold_start=True)
+    if status == "NEED_LOGIN":
+        print("NEED_LOGIN")
+    elif status == "ANSWER":
+        print("ANSWER|" + info)
+    else:
+        print("ERROR|" + info)
 
 if __name__ == "__main__":
     main()

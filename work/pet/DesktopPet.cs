@@ -1608,12 +1608,12 @@ namespace DesktopPet
             ThreadPool.QueueUserWorkItem(delegate { DoWeatherQuery(false, true); });
         }
 
-        private void SafeBubble(string text)
+        private void SafeBubble(string text, int durationMs = 0)
         {
             try
             {
                 if (IsHandleCreated && !IsDisposed)
-                    BeginInvoke(new Action(delegate { ShowBubble(text); }));
+                    BeginInvoke(new Action(delegate { ShowBubble(text, durationMs); }));
             }
             catch { }
         }
@@ -2258,11 +2258,23 @@ namespace DesktopPet
         }
 
         // 右键菜单"问豆包…"：调用网页版豆包回答（ask_doubao.py 驱动 Edge，窗口隐藏）
+        private int _doubaoBusy;
         private void AskDoubao()
         {
+            // 并发锁：上一轮还在跑时忽略新点击，避免多个脚本抢同一个浏览器
+            if (Interlocked.Exchange(ref _doubaoBusy, 1) == 1)
+            {
+                SafeBubble("豆包正在回答上一个问题，稍等一下～");
+                return;
+            }
             string q = ShowPrompt("问豆包", "输入你的问题（豆包会联网搜索后回答）：", "");
-            if (string.IsNullOrEmpty(q)) return;
-            SafeBubble("正在问豆包…\n首次使用会弹出浏览器窗口，需登录一次");
+            if (string.IsNullOrEmpty(q))
+            {
+                Interlocked.Exchange(ref _doubaoBusy, 0);
+                return;
+            }
+            // 状态气泡停留 90 秒（脚本通常要跑 40~70 秒）
+            SafeBubble("正在问豆包…\n首次使用会弹出浏览器窗口，需登录一次", 90000);
             string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(q));
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -2293,22 +2305,27 @@ namespace DesktopPet
                         {
                             string answer = File.ReadAllText(file, Encoding.UTF8);
                             if (answer.Length > 1200) answer = answer.Substring(0, 1200) + "\n…（回答过长已截断）";
-                            SafeBubble("【豆包】\n" + answer);
+                            // 回答气泡最长停留 2 分钟，足够读完
+                            SafeBubble("【豆包】\n" + answer, 120000);
                         }
-                        else SafeBubble("豆包回答了，但读取失败(>_<)");
+                        else SafeBubble("豆包回答了，但读取失败(>_<)", 15000);
                     }
                     else if (status == "NEED_LOGIN")
                     {
-                        SafeBubble("豆包需要登录：弹出的浏览器窗口请在 3 分钟内扫码登录豆包，\n登录后重新点\"问豆包\"即可～");
+                        SafeBubble("豆包需要登录：弹出的浏览器窗口请在 3 分钟内扫码登录豆包，\n登录后重新点\"问豆包\"即可～", 30000);
                     }
                     else
                     {
-                        SafeBubble("豆包没回应(>_<)\n" + (status.StartsWith("ERROR|") ? status.Substring(6) : status));
+                        SafeBubble("豆包没回应(>_<)\n" + (status.StartsWith("ERROR|") ? status.Substring(6) : status), 20000);
                     }
                 }
                 catch (Exception ex)
                 {
-                    SafeBubble("调用豆包失败(>_<)\n" + ex.Message);
+                    SafeBubble("调用豆包失败(>_<)\n" + ex.Message, 20000);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _doubaoBusy, 0);
                 }
             });
         }
@@ -2570,11 +2587,11 @@ namespace DesktopPet
             }
         }
 
-        private void ShowBubble(string text)
+        private void ShowBubble(string text, int durationMs = 0)
         {
             if (_bubble != null)
             {
-                _bubble.ShowBubble(text, PetScreenRect(), _topmost);
+                _bubble.ShowBubble(text, PetScreenRect(), _topmost, durationMs);
             }
         }
 
@@ -3214,7 +3231,7 @@ namespace DesktopPet
             Native.SetWindowLong(Handle, Native.GWL_EXSTYLE, ex);
         }
 
-        public void ShowBubble(string text, Rectangle petRect, bool topmost)
+        public void ShowBubble(string text, Rectangle petRect, bool topmost, int durationMs = 0)
         {
             _text = text ?? "";
             _lastPetRect = petRect;
@@ -3237,7 +3254,10 @@ namespace DesktopPet
 
             Render();
             if (!Visible) Show();
-            _hideAt = DateTime.UtcNow.AddMilliseconds(3200);
+            // 按文字长度计算显示时长：短句至少 5 秒，长回答最多 60 秒；可显式指定
+            int dur = durationMs > 0 ? durationMs
+                     : Math.Min(60000, Math.Max(5000, 3000 + _text.Length * 45));
+            _hideAt = DateTime.UtcNow.AddMilliseconds(dur);
             _alpha = 255;
             _timer.Start();
         }
