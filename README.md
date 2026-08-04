@@ -61,7 +61,7 @@ outputs/桌面宠物/桌宠.exe
 
 - **主程序**：C# / .NET WinForms，透明无边框置顶窗口（`UpdateLayeredWindow`），单文件编译并内嵌图标
 - **天气数据**：中国天气网；城市定位分两级——先调 Windows 位置服务（`Windows.Devices.Geolocation`，WiFi/GPS 三角定位）拿经纬度，再按内置城市经纬度表算最近城市（本地完成）；本地定位不可用（权限未开 / 无信号 / 超时）时自动回退 IP 定位（ipip.net → 搜狐 → ip-api）；仍失败可手动设置城市名或城市代码（如 `101280101`）
-- **问豆包**：`ask_doubao.py` 用 Playwright 驱动本机 Chrome（独立 profile，路径 `%APPDATA%\DesktopPet\doubao_profile`）打开网页版豆包并提问取回答，不经过任何付费 API。依赖：本机需装有 python 3、`pip install playwright`、Chrome；首次使用会在弹出的窗口里登录豆包一次（此后免登录）。回答截断为 1200 字显示
+- **问豆包**：`ask_doubao.py` 用 Selenium 驱动本机 Edge（独立 profile，路径 `%APPDATA%\DesktopPet\doubao_profile_edge`）打开网页版豆包并提问取回答，不经过任何付费 API。依赖：本机需装有 python 3、`pip install selenium`、Edge，以及桌宠目录下的 `msedgedriver.exe`（已随交付物发布）；首次使用会在弹出的窗口里登录豆包一次（此后免登录）。回答截断为 1200 字显示
 - **编译命令**（需 .NET Framework 4.x 的 csc，输出 `test_pet.exe`）：
   ```
   csc /nologo /target:winexe /out:test_pet.exe /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xml.dll /r:System.Web.dll /r:System.Runtime.dll /r:netstandard.dll /r:System.Runtime.WindowsRuntime.dll /r:winrt/windows.winmd /r:winrt/Windows.Foundation.FoundationContract.winmd /r:winrt/Windows.Foundation.UniversalApiContract.winmd DesktopPet.cs

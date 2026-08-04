@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-ask_doubao.py — 桌宠调用脚本：打开网页版豆包（doubao.com），提问并取回回答。
+ask_doubao.py — 桌宠调用脚本：用 Edge 打开网页版豆包（doubao.com），提问并取回回答。
 用法: python ask_doubao.py <问题base64>
 输出(stdout, 单行):
   ANSWER|<回答文件UTF-8路径>   成功
   NEED_LOGIN                  等登录超时
   ERROR|<原因>                失败
-首次使用会弹出 Chrome 窗口，需手动登录豆包一次（登录态保存在 profile 中，之后免登录）。
+首次使用会弹出 Edge 窗口，需手动登录豆包一次（登录态保存在 profile 中，之后免登录）。
+依赖：本机 python3 + `pip install selenium` + Edge + 本目录 msedgedriver.exe
 """
-import sys, os, base64, time, json
+import sys, os, base64, time
 
 def log(msg):
     try:
@@ -29,59 +30,78 @@ def main():
     log("收到问题: " + question[:50])
 
     answer_file = os.path.join(os.environ["APPDATA"], "DesktopPet", "doubao_answer.txt")
-    profile = os.path.join(os.environ["APPDATA"], "DesktopPet", "doubao_profile")
+    profile = os.path.join(os.environ["APPDATA"], "DesktopPet", "doubao_profile_edge")
+    base = os.path.dirname(os.path.abspath(__file__))
+    driver_path = os.path.join(base, "msedgedriver.exe")
 
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=profile, channel="chrome", headless=False,
-            viewport={"width": 1280, "height": 900})
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto("https://www.doubao.com/chat/", timeout=45000, wait_until="domcontentloaded")
-        page.wait_for_timeout(5000)
-        log("页面标题: " + str(page.title()))
+    from selenium import webdriver
+    from selenium.webdriver.edge.options import Options
+    from selenium.webdriver.edge.service import Service
+
+    opts = Options()
+    opts.add_argument("--user-data-dir=" + profile)
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-search-engine-choice-screen")
+    if not os.path.exists(driver_path):
+        print("ERROR|缺少 msedgedriver.exe（请放在桌宠目录下）")
+        return
+    svc = Service(driver_path)
+
+    driver = None
+    try:
+        driver = webdriver.Edge(service=svc, options=opts)
+        driver.set_window_size(1280, 900)
+        driver.set_page_load_timeout(45)
+        driver.get("https://www.doubao.com/chat/")
+        time.sleep(6)
+        log("页面标题: " + str(driver.title))
 
         # ---- 等待登录（最多 180 秒）----
         deadline = time.time() + 180
         while time.time() < deadline:
-            btn = page.query_selector("text=登录")
-            if btn is None:
+            btns = driver.find_elements("xpath", "//*[contains(text(),'登录')]")
+            if len(btns) == 0:
                 break
-            page.wait_for_timeout(3000)
+            time.sleep(3)
         else:
+            # 超时：保留 Edge 窗口让用户继续登录，脚本退出
+            log("等待登录超时，窗口保留")
             print("NEED_LOGIN")
-            ctx.close()
+            driver = None  # 防止 finally 里 quit 关掉等待登录的窗口
             return
         log("登录状态: 已登录")
 
         # ---- 定位输入框 ----
-        tb = page.query_selector("textarea[placeholder], div[contenteditable='true']")
+        def find_input():
+            try:
+                return driver.find_element("css selector", "textarea[placeholder], div[contenteditable='true']")
+            except Exception:
+                return None
+        tb = find_input()
         if tb is None:
-            # 再试一次等待
-            page.wait_for_timeout(4000)
-            tb = page.query_selector("textarea[placeholder], div[contenteditable='true']")
+            time.sleep(4)
+            tb = find_input()
         if tb is None:
             print("ERROR|找不到输入框（页面结构可能变化）")
-            ctx.close()
             return
 
         # ---- 记录发送前页面文本 ----
-        before = page.evaluate("() => document.body ? document.body.innerText : ''")
+        before = driver.execute_script("return document.body ? document.body.innerText : ''")
 
         # ---- 输入并发送 ----
         tb.click()
-        page.keyboard.type(question, delay=10)
-        page.wait_for_timeout(500)
-        page.keyboard.press("Enter")
+        tb.send_keys(question)
+        time.sleep(0.5)
+        tb.send_keys(u"\ue007")  # Enter
 
         # ---- 等待回答（最多 120 秒，文本 4 秒无变化视为完成）----
         last = before
         stable = 0
         deadline = time.time() + 120
         while time.time() < deadline:
-            page.wait_for_timeout(500)
+            time.sleep(0.5)
             try:
-                cur = page.evaluate("() => document.body ? document.body.innerText : ''")
+                cur = driver.execute_script("return document.body ? document.body.innerText : ''")
             except Exception:
                 cur = last
             if cur != last:
@@ -89,15 +109,13 @@ def main():
                 stable = 0
             else:
                 stable += 1
-                if stable >= 8:  # 4 秒无变化
+                if stable >= 8:
                     break
-        ctx.close()
 
         # ---- 提取回答：发送后新增的文本 ----
         answer = ""
         if len(last) > len(before):
             answer = last[len(before):]
-        # 清理常见 UI 噪声
         for junk in ("复制", "重新生成", "停止生成", "点赞", "踩", "举报"):
             if junk in answer:
                 answer = answer.split(junk)[0]
@@ -113,6 +131,15 @@ def main():
             return
         log("回答长度: " + str(len(answer)))
         print("ANSWER|" + answer_file)
+    except Exception as e:
+        log("异常: " + str(e))
+        print("ERROR|" + str(e)[:150])
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     main()
