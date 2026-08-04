@@ -1280,7 +1280,6 @@ namespace DesktopPet
             _miWeather.Enabled = false;
             _menu.Items.Add(_miWeather);
             _menu.Items.Add("定位信息", null, delegate { ShowLocateInfo(); });
-            _menu.Items.Add("问豆包…", null, delegate { AskDoubao(); });
 
             ToolStripMenuItem miFx = new ToolStripMenuItem("天气效果预览");
             string[] fxKeys = new string[] { "", "rain", "snow", "hot", "cold" };
@@ -2257,80 +2256,6 @@ namespace DesktopPet
             });
         }
 
-        // 右键菜单"问豆包…"：调用网页版豆包回答（ask_doubao.py 驱动 Edge，窗口隐藏）
-        private int _doubaoBusy;
-        private void AskDoubao()
-        {
-            // 并发锁：上一轮还在跑时忽略新点击，避免多个脚本抢同一个浏览器
-            if (Interlocked.Exchange(ref _doubaoBusy, 1) == 1)
-            {
-                SafeBubble("豆包正在回答上一个问题，稍等一下～");
-                return;
-            }
-            string q = ShowPrompt("问豆包", "输入你的问题（豆包会联网搜索后回答）：", "");
-            if (string.IsNullOrEmpty(q))
-            {
-                Interlocked.Exchange(ref _doubaoBusy, 0);
-                return;
-            }
-            // 状态气泡停留 90 秒（脚本通常要跑 40~70 秒）
-            SafeBubble("正在问豆包…\n首次使用会弹出浏览器窗口，需登录一次", 90000);
-            string b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(q));
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                try
-                {
-                    string py = Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "ask_doubao.py");
-                    ProcessStartInfo psi = new ProcessStartInfo("python", "\"" + py + "\" " + b64);
-                    psi.UseShellExecute = false;
-                    psi.RedirectStandardOutput = true;
-                    psi.CreateNoWindow = true;
-                    psi.StandardOutputEncoding = Encoding.UTF8;
-                    string status = "";
-                    using (Process proc = Process.Start(psi))
-                    {
-                        // 10 分钟上限：覆盖首次登录等待（3 分钟）+ 提问 + 等待回答
-                        if (!proc.WaitForExit(600000))
-                        {
-                            try { proc.Kill(); } catch { }
-                            SafeBubble("豆包超时没回应(>_<)\n请重试～");
-                            return;
-                        }
-                        status = proc.StandardOutput.ReadToEnd().Trim();
-                    }
-                    if (status.StartsWith("ANSWER|"))
-                    {
-                        string file = status.Substring(7).Trim();
-                        if (File.Exists(file))
-                        {
-                            string answer = File.ReadAllText(file, Encoding.UTF8);
-                            if (answer.Length > 1200) answer = answer.Substring(0, 1200) + "\n…（回答过长已截断）";
-                            // 回答气泡最长停留 2 分钟，足够读完
-                            SafeBubble("【豆包】\n" + answer, 120000);
-                        }
-                        else SafeBubble("豆包回答了，但读取失败(>_<)", 15000);
-                    }
-                    else if (status == "NEED_LOGIN")
-                    {
-                        SafeBubble("豆包需要登录：弹出的浏览器窗口请在 3 分钟内扫码登录豆包，\n登录后重新点\"问豆包\"即可～", 30000);
-                    }
-                    else
-                    {
-                        SafeBubble("豆包没回应(>_<)\n" + (status.StartsWith("ERROR|") ? status.Substring(6) : status), 20000);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    SafeBubble("调用豆包失败(>_<)\n" + ex.Message, 20000);
-                }
-                finally
-                {
-                    Interlocked.Exchange(ref _doubaoBusy, 0);
-                }
-            });
-        }
-
-        // 经纬度 -> 最近城市（Haversine 距离，内置城市经纬度表，完全本地计算）
         private const double EarthRadiusKm = 6371.0;
 
         private static string CityFromLatLon(double lat, double lon)

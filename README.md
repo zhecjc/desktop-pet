@@ -14,7 +14,6 @@
 - **换角色**：往 `characters` 文件夹放角色图即可随时换，纯色背景自动去背景，无需抠图
 - **自定义台词**：记事本编辑 `台词.txt`（一行一句，支持 `[点击][姿势][发呆][放下][开心][委屈]` 分段），菜单一键重新加载
 - **心情系统**：根据互动频率自动变化（开心 / 不错 / 困倦 / 委屈），影响动作风格与说话内容
-- **问豆包**：右键菜单"问豆包…"输入问题，调用网页版豆包（doubao.com）联网搜索后回答，气泡显示（超过 1200 字自动截断，气泡按文字长度停留 5 秒~2 分钟，状态提示全程可见）；豆包窗口全程隐藏到屏幕外，问答照常工作；同一会话可持续追问（多轮上下文）；首次使用会在弹出的窗口登录豆包一次（此后免登录）
 - **其他**：自动散步（可关）、开机自启、置顶显示、鼠标滚轮缩放、设置自动记忆
 
 ## 快速开始
@@ -44,7 +43,6 @@ outputs/桌面宠物/桌宠.exe
 │   ├── 桌宠.exe             # 程序本体（单文件）
 │   ├── 使用说明.txt
 │   ├── 台词.txt             # 气泡台词（可编辑）
-│   ├── ask_doubao.py       # 豆包问答脚本（Selenium 驱动 Edge 操作网页版豆包）
 │   ├── 角色透明图.png / 效果预览.png / 姿势预览.png
 │   └── characters/          # 角色文件夹（每子文件夹一个角色）
 └── work/                    # 开发目录
@@ -61,7 +59,6 @@ outputs/桌面宠物/桌宠.exe
 
 - **主程序**：C# / .NET WinForms，透明无边框置顶窗口（`UpdateLayeredWindow`），单文件编译并内嵌图标
 - **天气数据**：中国天气网；城市定位分两级——先调 Windows 位置服务（`Windows.Devices.Geolocation`，WiFi/GPS 三角定位）拿经纬度，再按内置城市经纬度表算最近城市（本地完成）；本地定位不可用（权限未开 / 无信号 / 超时）时自动回退 IP 定位（ipip.net → 搜狐 → ip-api）；仍失败可手动设置城市名或城市代码（如 `101280101`）
-- **问豆包**：`ask_doubao.py` 用 Selenium 驱动本机 Edge（独立 profile，路径 `%APPDATA%\DesktopPet\doubao_profile_edge`）打开网页版豆包并提问取回答，不经过任何付费 API。Edge 窗口启动在屏幕外，并附带 `--disable-backgrounding-occluded-windows` 等防后台节流参数，保证窗口隐藏时页面仍正常渲染、输入/发送/回答照常工作；同一保活会话连续提问 = 多轮上下文；自动检测登录状态，未登录时把窗口移到可见位置供扫码，登录后自动隐藏。依赖：本机需装有 python 3、`pip install selenium`、Edge，以及桌宠目录下的 `msedgedriver.exe`（已随交付物发布）；首次使用会在弹出的窗口里登录豆包一次（此后免登录）。回答在脚本内清洗（去掉"相关推荐/视频、参考 N 篇资料"等噪音），桌宠端截断为 1200 字显示
 - **编译命令**（需 .NET Framework 4.x 的 csc，输出 `test_pet.exe`）：
   ```
   csc /nologo /target:winexe /out:test_pet.exe /resource:character.png,DesktopPet.character.png /resource:poses\pose1.png,DesktopPet.pose1.png /resource:poses\pose2.png,DesktopPet.pose2.png /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Xml.dll /r:System.Web.dll /r:System.Runtime.dll /r:netstandard.dll /r:System.Runtime.WindowsRuntime.dll /r:winrt/windows.winmd /r:winrt/Windows.Foundation.FoundationContract.winmd /r:winrt/Windows.Foundation.UniversalApiContract.winmd DesktopPet.cs
