@@ -4,17 +4,26 @@ ask_doubao.py — 桌宠调用脚本：用 Edge 打开网页版豆包（doubao.c
 用法: python ask_doubao.py <问题base64>
 输出(stdout, 单行):
   ANSWER|<回答文件UTF-8路径>   成功
-  NEED_LOGIN                  等登录超时
+  NEED_LOGIN                  需要登录（窗口已显示等待登录）
   ERROR|<原因>                失败
-首次使用会弹出 Edge 窗口，需手动登录豆包一次（登录态保存在 profile 中，之后免登录）。
+
+流程要点：
+- Edge 窗口默认启动在屏幕外（-32000,-32000），用户全程看不到豆包界面；
+- 附带防后台节流参数，保证窗口在屏幕外时页面仍正常渲染、输入/发送/回答照常工作；
+- 检测到未登录时自动把窗口移到可见位置供扫码/登录，登录后自动隐藏并重载页面；
+- 同一保活会话连续提问 = 多轮上下文（可追问）；
+- 输入用 send_keys，失败自动切换 JS 原生 setter 重试；Enter 无效则点发送按钮；
+- 关闭旧保活 Edge 时先优雅关闭（保留会话 cookie），再兜底强杀。
+
 依赖：本机 python3 + `pip install selenium` + Edge + 本目录 msedgedriver.exe
 """
-import sys, os, base64, time, subprocess, urllib.request
+import sys, os, base64, time, subprocess, urllib.request, threading
 
 DEBUG_PORT = 9223
 EDGE_EXE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 DOUBAO_URL = "https://www.doubao.com/chat/"
-INPUT_SEL = "textarea[placeholder], div[contenteditable='true']"
+INPUT_SEL = "textarea[placeholder]"
+PROFILE_NAME = "doubao_profile_edge"
 
 def log(msg):
     try:
@@ -30,38 +39,54 @@ def edge_alive():
     except Exception:
         return False
 
-def ensure_edge(profile):
-    """保活 Edge 不存在时用 subprocess 独立启动（带豆包 URL 直接加载）"""
+def stop_keepalive_edge():
+    """优雅关闭旧保活 Edge（保留登录态）：先发 WM_CLOSE，超时再强杀。不影响用户日常 Edge。"""
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
+          "Where-Object { $_.CommandLine -like '*" + PROFILE_NAME + "*' }")
     try:
-        for f in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-            p = os.path.join(profile, f)
-            if os.path.exists(p):
-                os.remove(p)
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps + " | ForEach-Object { $_.ProcessId }"],
+            capture_output=True, text=True, timeout=20)
+        pids = [p.strip() for p in (out.stdout or "").splitlines() if p.strip().isdigit()]
+        for pid in pids:
+            try:
+                subprocess.run(["taskkill", "/PID", pid, "/T"],
+                               capture_output=True, timeout=10)
+            except Exception:
+                pass
+        time.sleep(6)
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+            ps + " | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+            timeout=20)
     except Exception:
         pass
+    time.sleep(2)
+
+def ensure_edge(profile):
+    """保活 Edge 不存在时冷启动（带豆包 URL 直接加载，窗口在屏幕外）"""
+    for f in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        p = os.path.join(profile, f)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except Exception:
+                pass
     subprocess.Popen([
         EDGE_EXE, "--user-data-dir=" + profile, "--remote-debugging-port=" + str(DEBUG_PORT),
         "--no-first-run", "--disable-search-engine-choice-screen",
         "--disable-blink-features=AutomationControlled",
+        # 防止窗口在屏幕外/被遮挡时 Chromium 暂停渲染与定时器，保证问答正常
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--disable-background-networking",
         "--window-position=-32000,-32000", "--window-size=1280,900", "about:blank"],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
-    for _ in range(50):
+    for _ in range(60):
         if edge_alive():
             return True
         time.sleep(1)
     return edge_alive()
-
-def wait_input(driver, timeout_s):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            el = driver.find_element("css selector", INPUT_SEL)
-            if el is not None:
-                return el
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return None
 
 def page_text(driver):
     try:
@@ -69,57 +94,124 @@ def page_text(driver):
     except Exception:
         return ""
 
+def find_input(driver, timeout_s=10):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            el = driver.find_element("css selector", INPUT_SEL)
+            if el is not None and el.is_displayed():
+                return el
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return None
+
+def need_login(driver):
+    """判断当前是否未登录（豆包登录按钮文本在 span 内，需用 contains(.) 或 class 判断）"""
+    try:
+        for b in driver.find_elements("css selector", "button, a"):
+            try:
+                if not b.is_displayed():
+                    continue
+            except Exception:
+                continue
+            cls = (b.get_attribute("class") or "")
+            txt = (b.get_attribute("innerText") or "").strip()
+            if "login-btn" in cls.lower() or txt == "登录" or "登录" in txt[:8]:
+                return True
+    except Exception:
+        pass
+    return False
+
 def send_question(driver, question):
-    """发送问题并确认进入页面。先确认输入成功，Enter 无效则点发送按钮，最多重试 4 次"""
+    """发送问题并确认进入页面：send_keys -> 校验 value -> JS setter 兜底 -> Enter -> 点发送按钮兜底"""
     for attempt in range(4):
-        tb = wait_input(driver, 10)
+        tb = find_input(driver, 10)
         if tb is None:
+            log("输入框未找到（尝试 " + str(attempt + 1) + "）")
             time.sleep(3)
             continue
+
+        # 输入：优先 send_keys，校验 value 为空则用 JS 原生 setter
+        typed = False
         try:
             tb.click()
             time.sleep(0.3)
             tb.send_keys(question)
             time.sleep(0.8)
+            val = driver.execute_script("return arguments[0].value", tb) or ""
+            if question in val:
+                typed = True
         except Exception as e:
-            log("输入异常: " + str(e))
+            log("send_keys 异常: " + str(e))
+        if not typed:
+            try:
+                driver.execute_script("""
+                    var el = arguments[0];
+                    el.focus();
+                    var set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+                    set.call(el, arguments[1]);
+                    el.dispatchEvent(new InputEvent('input', {bubbles: true, data: arguments[1], inputType: 'insertText'}));
+                """, tb, question)
+                time.sleep(0.6)
+                val = driver.execute_script("return arguments[0].value", tb) or ""
+                typed = question in val
+            except Exception as e:
+                log("JS 输入异常: " + str(e))
+        if not typed:
+            log("输入未生效（尝试 " + str(attempt + 1) + "），页面可能异常，重试")
             time.sleep(3)
             continue
+        log("输入成功: " + question[:30])
 
-        # 发送：Enter，若输入框是 contenteditable 或 Enter 无效则点发送按钮兜底
+        # 发送：Enter，无效则点发送按钮（class 含 send-msg-btn）
+        sent = False
+        text_before_send = page_text(driver)
+        q_before = text_before_send.count(question)
         try:
             tb.send_keys(u"\ue007")
-            time.sleep(0.5)
-        except Exception:
-            pass
-        # 验证：问题出现在页面文本中（12 秒内）；出现则成功，否则点发送按钮再验证一次
-        deadline = time.time() + 12
-        ok = False
-        while time.time() < deadline:
-            time.sleep(0.5)
-            if question in page_text(driver):
-                ok = True
-                break
-        if not ok:
-            try:
-                btn = driver.find_element("css selector", "button[aria-label*='发送'], button[aria-label*='send']")
-                btn.click()
-            except Exception:
-                pass
-            deadline = time.time() + 8
+            deadline = time.time() + 10
             while time.time() < deadline:
                 time.sleep(0.5)
-                if question in page_text(driver):
-                    ok = True
+                cur = page_text(driver)
+                if question in cur and cur.count(question) > q_before:
+                    sent = True
                     break
-        if ok:
+        except Exception as e:
+            log("Enter 异常: " + str(e))
+        if not sent:
+            try:
+                btns = driver.find_elements("css selector", "button[class*='send-msg-btn']")
+                for b in btns:
+                    try:
+                        if b.is_displayed():
+                            b.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", b)
+                    break
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    time.sleep(0.5)
+                    cur = page_text(driver)
+                    if question in cur and cur.count(question) > q_before:
+                        sent = True
+                        break
+            except Exception as e:
+                log("发送按钮异常: " + str(e))
+        if sent:
+            log("问题已发送")
             return True
+
+        # 发送失败：可能是登录弹窗拦截，或页面异常
+        if need_login(driver):
+            log("发送时检测到未登录（尝试 " + str(attempt + 1) + "）")
+            return "NEED_LOGIN"
         log("发送后问题未出现（尝试 " + str(attempt + 1) + "）。页面文本尾部: " + page_text(driver)[-150:].replace("\n", " | "))
         time.sleep(8)
     return False
 
 def try_extract_answer(full, before, question):
-    """从最终页面文本中提取回答"""
+    """从最终页面文本中提取回答：取问题最后一次出现之后的文本，截到消息操作按钮/推荐区为止"""
     tail = ""
     qidx = full.rfind(question)
     if qidx >= 0:
@@ -127,15 +219,34 @@ def try_extract_answer(full, before, question):
     if not tail and len(full) > len(before):
         tail = full[len(before):]
     answer = tail
-    for junk in ("快速", "解题答疑", "帮我写作", "图像生成", "音乐生成", "翻译", "PPT 生成", "视频生成", "更多",
-                 "复制", "重新生成", "停止生成", "点赞", "踩", "举报", "检测到自动化"):
+    # 助手消息自带操作按钮（复制/重新生成/点赞…），其后通常是推荐内容或 UI，直接截断
+    for junk in ("复制", "重新生成", "停止生成", "点赞", "踩", "举报",
+                 "相关推荐", "相关视频", "相关文章", "猜你想问", "大家都在问", "相关问题", "更多推荐",
+                 "以上内容由 AI 生成", "内容由 AI 生成", "展开全部", "点击展开",
+                 "资讯：", "快速", "PPT 生成", "图像生成", "帮我写作", "视频生成",
+                 "翻译", "深入研究", "录音转写", "更多", "专业版", "下载电脑版",
+                 "检测到自动化", "自动化软件"):
         if junk in answer:
             answer = answer.split(junk)[0]
+    # 去掉开头的"参考 N 篇资料 / 找到 N 篇资料 / 已为你搜索到"等搜索摘要行
+    lines0 = answer.split("\n")
+    while lines0:
+        first = lines0[0].strip()
+        if not first:
+            lines0.pop(0)
+            continue
+        if (first.startswith("搜索") or first.startswith("参考") or first.startswith("找到")
+                or first.startswith("已搜索") or first.startswith("已为你") or first.startswith("搜索到")) and len(first) <= 30:
+            lines0.pop(0)
+        else:
+            break
+    answer = "\n".join(lines0)
     core = answer.strip()
     lines = answer.split("\n")
     while lines:
         last_line = lines[-1].strip()
-        if len(last_line) <= 40 and not last_line.endswith(("。", "！", "：", ":", "；", ";", "～", "~")):
+        # 末尾短行视为 UI/建议（除非以句末标点结尾，如答案的"。"）
+        if len(last_line) <= 30 and not last_line.endswith(("。", "！", "～", "~", "…")):
             lines.pop()
         else:
             break
@@ -153,8 +264,19 @@ def main():
         return
     log("收到问题: " + question[:50])
 
+    # 总超时看门狗：防止浏览器/驱动异常导致独立运行时永久挂起（540 秒强制退出）
+    def _watchdog():
+        time.sleep(540)
+        try:
+            sys.stdout.write("ERROR|处理超时（浏览器异常），请重试\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(1)
+    threading.Thread(target=_watchdog, daemon=True).start()
+
     answer_file = os.path.join(os.environ["APPDATA"], "DesktopPet", "doubao_answer.txt")
-    profile = os.path.join(os.environ["APPDATA"], "DesktopPet", "doubao_profile_edge")
+    profile = os.path.join(os.environ["APPDATA"], "DesktopPet", PROFILE_NAME)
     base = os.path.dirname(os.path.abspath(__file__))
     driver_path = os.path.join(base, "msedgedriver.exe")
     if not os.path.exists(driver_path):
@@ -167,31 +289,13 @@ def main():
     except Exception:
         pass
 
-    # 总超时看门狗：防止浏览器/驱动异常导致永久挂起（240 秒强制退出）
-    import threading
-    def _watchdog():
-        time.sleep(240)
-        try:
-            sys.stdout.write("ERROR|处理超时（浏览器异常），请重试\n")
-            sys.stdout.flush()
-        except Exception:
-            pass
-        os._exit(1)
-    threading.Thread(target=_watchdog, daemon=True).start()
-
     # 保活 Edge：无则冷启动，有则复用
     if not edge_alive():
         if not os.path.exists(EDGE_EXE):
             print("ERROR|找不到 Edge")
             return
-        # 清理半死/残留的保活 Edge（避免 profile 锁与端口占用导致新实例卡死；不影响用户日常 Edge）
-        try:
-            subprocess.run(["powershell", "-NoProfile", "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object { $_.CommandLine -like '*doubao_profile_edge*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
-                timeout=20)
-        except Exception:
-            pass
-        time.sleep(3)  # 等端口释放
+        stop_keepalive_edge()
+        time.sleep(3)
         log("冷启动 Edge")
         if not ensure_edge(profile):
             print("ERROR|Edge 启动失败")
@@ -218,46 +322,61 @@ def main():
         except Exception:
             pass
 
-        # 等待输入框（页面加载完成）；超时则重载一次
-        # 连接后总是 get 重载：Selenium 阻塞等待页面加载完成，保证 JS 就绪（直接发送会因 JS 未绑定而无效）
+        # 复用保活会话时若页面还是豆包聊天页则直接使用（保留多轮上下文），否则重载
         try:
-            driver.get(DOUBAO_URL)
+            cur = driver.current_url or ""
+            on_doubao = ("doubao.com" in cur)
         except Exception:
-            pass
-        if wait_input(driver, 30) is None:
+            on_doubao = False
+        if on_doubao and find_input(driver, 6) is not None:
+            log("复用当前豆包会话（多轮上下文）")
+        else:
             try:
                 driver.get(DOUBAO_URL)
             except Exception:
                 pass
-            if wait_input(driver, 30) is None:
-                print("ERROR|页面加载超时（网络慢或页面异常）")
-                return
+            if find_input(driver, 30) is None:
+                try:
+                    driver.get(DOUBAO_URL)
+                except Exception:
+                    pass
+                if find_input(driver, 30) is None:
+                    print("ERROR|页面加载超时（网络慢或页面异常）")
+                    return
         log("页面标题: " + str(driver.title))
 
-        # 登录检测：未登录则把窗口移到可见位置让用户登录（登录后自动隐藏到屏外）
-        def _need_login():
-            try:
-                return len(driver.find_elements("xpath", "//button[contains(text(),'登录')] | //a[contains(text(),'登录')]")) > 0
-            except Exception:
-                return False
-
-        if _need_login():
+        # 登录检测：未登录则把窗口移到可见位置让用户登录（登录后自动隐藏）
+        login_timeout = 180
+        try:
+            login_timeout = max(30, min(600, int(os.environ.get("DOUBAO_LOGIN_TIMEOUT", "180"))))
+        except Exception:
+            pass
+        if need_login(driver):
             try:
                 driver.set_window_position(150, 100)
                 driver.set_window_size(1280, 900)
             except Exception:
                 pass
-            log("检测到未登录，已显示窗口等待登录")
-            deadline = time.time() + 180
+            log("检测到未登录，已显示窗口等待登录（" + str(login_timeout) + " 秒）")
+            deadline = time.time() + login_timeout
             while time.time() < deadline:
-                if not _need_login():
+                if not need_login(driver):
                     break
                 time.sleep(3)
-            else:
+            if need_login(driver):
                 log("等待登录超时，窗口保留")
                 print("NEED_LOGIN")
                 return
             log("登录成功")
+            # 登录后重载页面，确保聊天输入组件就绪
+            try:
+                driver.get(DOUBAO_URL)
+            except Exception:
+                pass
+            if find_input(driver, 30) is None:
+                print("ERROR|登录后页面加载异常")
+                return
+
         # 隐藏到屏幕外（用户不可见）
         try:
             driver.set_window_position(-32000, -32000)
@@ -265,13 +384,23 @@ def main():
             pass
         log("豆包窗口已隐藏")
 
-        # 等页面 JS 就绪（冷启动时输入框 DOM 出现但 JS 可能未绑定，直接发送会无效）
-        time.sleep(6)
+        # 等页面 JS 就绪（冷启动时输入框 DOM 出现但 JS 可能未绑定）
+        time.sleep(3)
 
         # 发送问题（含验证重试）
-        if not send_question(driver, question):
+        result = send_question(driver, question)
+        if result == "NEED_LOGIN":
+            try:
+                driver.set_window_position(150, 100)
+                driver.set_window_size(1280, 900)
+            except Exception:
+                pass
+            print("NEED_LOGIN")
+            return
+        if result is not True:
             print("ERROR|发送问题失败（页面可能异常，稍后再试）")
             return
+
         before = page_text(driver)
 
         # 等待回答（最多 120 秒，6 秒无变化视为完成）

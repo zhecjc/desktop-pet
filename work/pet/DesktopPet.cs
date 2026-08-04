@@ -2257,7 +2257,7 @@ namespace DesktopPet
             });
         }
 
-        // 右键菜单"问豆包…"：调用网页版豆包回答（ask_doubao.py 驱动 Chrome）
+        // 右键菜单"问豆包…"：调用网页版豆包回答（ask_doubao.py 驱动 Edge，窗口隐藏）
         private void AskDoubao()
         {
             string q = ShowPrompt("问豆包", "输入你的问题（豆包会联网搜索后回答）：", "");
@@ -2277,7 +2277,8 @@ namespace DesktopPet
                     string status = "";
                     using (Process proc = Process.Start(psi))
                     {
-                        if (!proc.WaitForExit(330000))
+                        // 10 分钟上限：覆盖首次登录等待（3 分钟）+ 提问 + 等待回答
+                        if (!proc.WaitForExit(600000))
                         {
                             try { proc.Kill(); } catch { }
                             SafeBubble("豆包超时没回应(>_<)\n请重试～");
@@ -2298,7 +2299,7 @@ namespace DesktopPet
                     }
                     else if (status == "NEED_LOGIN")
                     {
-                        SafeBubble("豆包需要登录：刚才弹出的浏览器窗口请在 3 分钟内登录豆包，\n登录后重新点\"问豆包\"即可～");
+                        SafeBubble("豆包需要登录：弹出的浏览器窗口请在 3 分钟内扫码登录豆包，\n登录后重新点\"问豆包\"即可～");
                     }
                     else
                     {
