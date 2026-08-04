@@ -42,7 +42,8 @@ def ensure_edge(profile):
     subprocess.Popen([
         EDGE_EXE, "--user-data-dir=" + profile, "--remote-debugging-port=" + str(DEBUG_PORT),
         "--no-first-run", "--disable-search-engine-choice-screen",
-        "--disable-blink-features=AutomationControlled", "about:blank"],
+        "--disable-blink-features=AutomationControlled",
+        "--window-position=-32000,-32000", "--window-size=1280,900", "about:blank"],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
     for _ in range(50):
         if edge_alive():
@@ -233,18 +234,36 @@ def main():
                 return
         log("页面标题: " + str(driver.title))
 
-        # 等待登录（最多 180 秒）：只认可点击的"登录"按钮（避免页脚杂文本误报）
-        deadline = time.time() + 180
-        while time.time() < deadline:
-            btns = driver.find_elements("xpath", "//button[contains(text(),'登录')] | //a[contains(text(),'登录')]")
-            if len(btns) == 0:
-                break
-            time.sleep(3)
-        else:
-            log("等待登录超时，窗口保留")
-            print("NEED_LOGIN")
-            return
-        log("登录状态: 已登录")
+        # 登录检测：未登录则把窗口移到可见位置让用户登录（登录后自动隐藏到屏外）
+        def _need_login():
+            try:
+                return len(driver.find_elements("xpath", "//button[contains(text(),'登录')] | //a[contains(text(),'登录')]")) > 0
+            except Exception:
+                return False
+
+        if _need_login():
+            try:
+                driver.set_window_position(150, 100)
+                driver.set_window_size(1280, 900)
+            except Exception:
+                pass
+            log("检测到未登录，已显示窗口等待登录")
+            deadline = time.time() + 180
+            while time.time() < deadline:
+                if not _need_login():
+                    break
+                time.sleep(3)
+            else:
+                log("等待登录超时，窗口保留")
+                print("NEED_LOGIN")
+                return
+            log("登录成功")
+        # 隐藏到屏幕外（用户不可见）
+        try:
+            driver.set_window_position(-32000, -32000)
+        except Exception:
+            pass
+        log("豆包窗口已隐藏")
 
         # 等页面 JS 就绪（冷启动时输入框 DOM 出现但 JS 可能未绑定，直接发送会无效）
         time.sleep(6)
