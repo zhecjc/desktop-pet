@@ -1740,7 +1740,7 @@ namespace DesktopPet
 
         private static string DecideWeatherFx(WeatherInfo wi)
         {
-            if (wi.TempNow >= 33 || wi.TempHigh >= 34) return "hot";
+            if (wi.TempNow >= 27 || wi.TempHigh >= 27) return "hot";
             if (wi.TempNow <= 2 || (wi.TempLow > -9000 && wi.TempLow <= 0)) return "cold";
             return "";
         }
@@ -1753,7 +1753,7 @@ namespace DesktopPet
                 if (w.Contains("雪")) return "snow";
                 if (w.Contains("雨") || w.Contains("冰雹")) return "rain";
             }
-            if (wi.TempNow >= 33 || wi.TempHigh >= 34) return "hot";
+            if (wi.TempNow >= 27 || wi.TempHigh >= 27) return "hot";
             if (wi.TempNow <= 2 || (wi.TempLow > -9000 && wi.TempLow <= 0)) return "cold";
             return "";
         }
