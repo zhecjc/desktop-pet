@@ -51,7 +51,6 @@ outputs/桌面宠物/桌宠.exe
     │   ├── DesktopPet_v2.cs  # 历史版本
     │   ├── DesktopPet_v2b.cs
     │   └── …                 # 图像处理 / 测试 / 补丁脚本、测试帧
-    ├── doubao_vision.py      # 豆包视觉描述脚本（火山方舟 Ark API）
     └── …
 ```
 
@@ -59,7 +58,6 @@ outputs/桌面宠物/桌宠.exe
 
 - **主程序**：C# / .NET WinForms，透明无边框置顶窗口（`UpdateLayeredWindow`），单文件编译并内嵌图标
 - **天气数据**：中国天气网，IP 自动定位城市；定位不准或失败时可手动设置城市名或城市代码（如 `101280101`）
-- **`work/doubao_vision.py`**：豆包视觉理解脚本，把本地图片发给豆包视觉模型返回描述（需环境变量 `ARK_API_KEY`，支持 `--prompt` / `--model`，超大图自动压缩）
 
 ## 常见问题
 
