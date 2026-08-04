@@ -5,6 +5,9 @@ out = r"outputs\桌面宠物"
 # 1) 复制正式 EXE
 shutil.copy(r"work\pet\test_pet.exe", os.path.join(out, "桌宠.exe"))
 
+# 1b) 复制豆包问答脚本（桌宠从 exe 同目录调用）
+shutil.copy(r"work\pet\ask_doubao.py", os.path.join(out, "ask_doubao.py"))
+
 # 2) 角色文件夹
 char_root = os.path.join(out, "characters")
 default_char = os.path.join(char_root, "默认角色")
